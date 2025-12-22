@@ -1,0 +1,30 @@
+syntax = "proto3";
+package venom;
+
+message Envelope {
+    // Identity Key of the sender (so we know who sent it)
+    bytes sender_identity_key = 1;
+
+    // Ephemeral Key used for this specific message encryption
+    // (Allows the receiver to derive the shared secret)
+    bytes ephemeral_pubkey = 2;
+
+    bytes nonce = 3;
+    bytes ciphertext = 4;
+    bytes signature = 5;   // Sign(ciphertext + keys)
+}
+
+message Payload {
+    enum Type { UNKNOWN=0; TEXT=1; IMAGE=2; ACK=3; BEACON=4; }
+    Type type = 1;
+    uint64 timestamp = 2;
+    string body = 3;
+    bytes binary_data = 4;
+    Beacon beacon_data = 5;
+}
+
+message Beacon {
+    string display_name = 1;
+    uint32 port = 2;
+    bytes public_key = 3;
+}
