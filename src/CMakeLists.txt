@@ -1,14 +1,14 @@
 # --- Nest Daemon Executable ---
 add_executable(nestd
         daemon/main.cpp
-        daemon/Beacon.hpp
-        daemon/Beacon.cpp
-        common/Crypto.hpp
-        common/Crypto.cpp
+        daemon/beacon.hpp
+        daemon/beacon.cpp
+        common/crypto.hpp
+        common/crypto.cpp
         common/db.hpp
         common/db.cpp
-        daemon/Router.hpp
-        daemon/Router.cpp
+        daemon/router.hpp
+        daemon/router.cpp
         # Add other sources here as we build them:
         # daemon/network.cpp
         # common/crypto.cpp
