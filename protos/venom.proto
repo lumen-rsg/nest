@@ -1,31 +1,63 @@
 syntax = "proto3";
 package venom;
 
+message Packet {
+    enum Type {
+        UNKNOWN = 0;
+        REGISTER = 1;      // "I want to be @cv2"
+        LOOKUP_USER = 2;   // "Who is @cv2?"
+        SEND = 3;          // "Msg for UserID X" (Routing is still by ID for speed)
+        FETCH = 4;         // "Get my msgs"
+    }
+
+    Type type = 1;
+
+    // Auth
+    bytes sender_id_pubkey = 2;
+    bytes signature = 3;
+    uint64 timestamp = 4;
+
+    // Payload for specific actions
+    RegisterPayload register = 5;
+    string lookup_username = 6;    // For LOOKUP_USER
+
+    // Routing (For SEND)
+    bytes target_id_pubkey = 7;
+    Envelope envelope = 8;
+}
+
+message RegisterPayload {
+    string username = 1;        // "cv2"
+    bytes enc_pubkey = 2;       // X25519 Key (Public Directory needs this)
+}
+
+message Response {
+    uint32 status = 1;       // 200 OK, 409 Conflict (User exists), 404 Not Found
+    string error_msg = 2;
+
+    // Return Data
+    UserInfo user_info = 3;             // Result of LOOKUP
+    repeated Envelope pending_messages = 4; // Result of FETCH
+}
+
+message UserInfo {
+    string username = 1;
+    bytes id_pubkey = 2;   // Ed25519
+    bytes enc_pubkey = 3;  // X25519
+}
+
+// ... Envelope, Payload remain same ...
 message Envelope {
-    // Identity Key of the sender (so we know who sent it)
     bytes sender_identity_key = 1;
-
-    // Ephemeral Key used for this specific message encryption
-    // (Allows the receiver to derive the shared secret)
     bytes ephemeral_pubkey = 2;
-
     bytes nonce = 3;
     bytes ciphertext = 4;
-    bytes signature = 5;   // Sign(ciphertext + keys)
+    bytes signature = 5;
 }
 
 message Payload {
-    enum Type { UNKNOWN=0; TEXT=1; IMAGE=2; ACK=3; BEACON=4; }
+    enum Type { UNKNOWN=0; TEXT=1; }
     Type type = 1;
     uint64 timestamp = 2;
     string body = 3;
-    bytes binary_data = 4;
-    Beacon beacon_data = 5;
-}
-
-message Beacon {
-    string display_name = 1;
-    uint32 port = 2;
-    bytes public_key = 3;      // Ed25519 (Identity / Signing)
-    bytes enc_public_key = 4;  // X25519  (Encryption / ECDH) <-- NEW
 }

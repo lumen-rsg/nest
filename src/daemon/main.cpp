@@ -2,183 +2,150 @@
 #include <string>
 #include <vector>
 #include <thread>
-#include <print>   // C++23
-#include <format>  // C++23
+#include <print>
+#include <format>
 #include <sstream>
 
-// Include our modules
 #include "../common/crypto.hpp"
 #include "../common/db.hpp"
-#include "beacon.hpp"
 #include "router.hpp"
 
-// --- Helpers ---
-
-// Convert Raw Bytes -> Hex String
 std::string to_hex(const std::vector<uint8_t>& data) {
     std::string s;
     for(auto b : data) s += std::format("{:02x}", b);
     return s;
 }
 
-// Convert Raw Bytes -> Hex String (Overload for std::string container)
-std::string to_hex(const std::string& data) {
-    std::string s;
-    for(auto b : data) s += std::format("{:02x}", static_cast<unsigned char>(b));
-    return s;
-}
-
-// --- Main ---
-
-int main() {
+int main(int argc, char* argv[]) {
     std::println("=========================================");
-    std::println("      NEST SECURE MESSENGER (DAEMON)     ");
+    std::println("       NEST SECURE CLIENT (DAEMON)       ");
     std::println("=========================================");
 
-    // 1. Initialize Database
-    // ----------------------
+    if (argc < 2) {
+        std::println("Usage: ./nestd <HIVE_IP>");
+        std::println("Example: ./nestd 127.0.0.1");
+        return 1;
+    }
+    std::string server_ip = argv[1];
+    uint16_t server_port = 5555;
+
+    // 1. Database
     nest::Database db;
-    // In a real app, you'd get this from stdin or the GUI
-    std::string db_pass = "secure_password_123";
-
-    if (!db.open("nest.db", db_pass)) {
-        std::println(stderr, "FATAL: Failed to open database.");
+    // In production, ask user for password via stdin
+    if (!db.open("nest.db", "pass")) {
+        std::println(stderr, "Fatal: Could not open database.");
         return 1;
     }
 
-    // 2. Identity Management
-    // ----------------------
-    nest::crypto::KeyPair my_keys;     // Ed25519
-    nest::crypto::KeyPair my_enc_keys; // X25519
+    nest::crypto::KeyPair my_keys, my_enc_keys;
     std::string my_name;
+    bool is_new_registration = false;
 
+    // 2. Identity Check
     if (db.has_identity()) {
         auto id = db.load_identity();
-        if (!id) { /* handle error */ }
+        if (!id) {
+            std::println(stderr, "Fatal: Failed to load identity (wrong password?).");
+            return 1;
+        }
         my_keys = id->keys;
-        my_enc_keys = id->enc_keys; // Load X25519
+        my_enc_keys = id->enc_keys;
         my_name = id->name;
+        std::println("Welcome back, @{}", my_name);
+    }
+    else {
+        std::println(">>> REGISTRATION <<<");
+        std::print("Enter your desired username: @");
+        std::string input_name;
+        std::cin >> input_name;
+
+        // Strip @ if typed
+        if (input_name.starts_with("@")) input_name.erase(0, 1);
+
+        std::println("Generating Crypto Keys...");
+        auto k1 = nest::crypto::generate_identity_key();
+        auto k2 = nest::crypto::generate_ephemeral_key();
+        if (!k1 || !k2) return 1;
+
+        my_keys = *k1;
+        my_enc_keys = *k2;
+        my_name = input_name;
+        is_new_registration = true;
+
+        // Save locally first
+        db.save_identity(my_keys, my_enc_keys, my_name);
+    }
+
+    // 3. Start Router
+    nest::Router router(my_keys, my_enc_keys, db);
+
+    // Start Polling Loop
+    router.start(server_ip, server_port, [](const std::string& sender_hex, const venom::Payload& p) {
+        // We receive the raw sender hex ID.
+        // In a full app, we would Lookup this ID to show the username.
+        std::println("\n>>> MSG from [{}..]: {}", sender_hex.substr(0, 8), p.body());
+        std::print("> "); std::cout.flush();
+    });
+
+    // 4. Register / Sync with Server
+    // Even if we have local keys, we register to ensure Hive knows we exist/updates keys
+    std::println("Connecting to Hive at {}...", server_ip);
+
+    if (router.register_on_server(my_name)) {
+        std::println("Registration/Login Confirmed for @{}", my_name);
     } else {
-        std::println("[Main] First run. Generating 25519 Keys...");
-        auto res_id = nest::crypto::generate_identity_key();   // Ed25519
-        auto res_enc = nest::crypto::generate_ephemeral_key(); // X25519 (Reusing this function is fine, it generates X25519)
-        if (!res_id || !res_enc) return 1;
-
-        my_keys = *res_id;
-        my_enc_keys = *res_enc;
-        // Generate a random name for testing
-        std::srand(std::time(nullptr));
-        my_name = "User_" + std::to_string(std::rand() % 9000 + 1000);
-
-        if (!db.save_identity(my_keys, my_enc_keys, my_name)) {
-            std::println(stderr, "FATAL: Could not save identity.");
+        std::println(stderr, "Failed to register with Hive! (Username taken or Server offline?)");
+        if (is_new_registration) {
+            // In a real app, maybe delete local DB so user can try again
             return 1;
         }
     }
 
-    std::println("Logged in as: {}", my_name);
-    std::println("Fingerprint:  {}", to_hex(my_keys.public_key).substr(0, 16));
-    std::println("Internal IP:  (Handled by VPN)");
+    std::println("Ready. Commands: /send @user <msg>, /quit");
 
-    // 3. Start Networking Services
-    // ----------------------------
-    uint32_t port = 5555;
-
-    // A. Beacon (Discovery)
-    nest::BeaconService beacon(port, my_name, my_keys, my_enc_keys);
-    beacon.start();
-
-    // B. Router (Messaging)
-    nest::Router router(port, my_keys, my_enc_keys, db);
-
-    // Callback: What happens when we receive a message?
-    router.start([&](const std::string& sender_pk_raw, const venom::Payload& p) {
-        // sender_pk_raw comes in as raw bytes from the envelope
-        // Note: In Router.cpp we fixed it to pass raw string, but let's double check.
-        // Actually, looking at Router.cpp, it passes sender_hex_str in the callback?
-        // Let's assume it passes HEX based on my previous snippet logic:
-        // "on_message_(sender_hex_str, payload);"
-
-        std::string sender_display = sender_pk_raw.substr(0, 8); // Short hash
-
-        // Check if we know this person (simple lookup in peers for now)
-        // In real app, we query DB contacts.
-
-        std::println("");
-        std::println(">>> [Encrypted Msg from {}]: {}", sender_display, p.body());
-        std::print("> "); // Restore prompt
-        std::cout.flush();
-    });
-
-    std::println("[Main] Services started. Waiting for peers...");
-    std::println("[Help] Commands: /list, /send <index> <message>, /quit");
-
-    // 4. Interactive Command Loop
-    // ---------------------------
+    // 5. Command Loop
     std::string line;
-    while (true) {
-        std::print("> ");
-        std::cout.flush();
+    // Consume leftover newline from cin if we did registration
+    if (is_new_registration) std::getline(std::cin, line);
 
+    while (true) {
+        std::print("> "); std::cout.flush();
         if (!std::getline(std::cin, line)) break;
         if (line.empty()) continue;
+        if (line == "/quit") break;
 
-        if (line == "/quit" || line == "/exit") {
-            break;
-        }
-        else if (line == "/list") {
-            auto peers = beacon.get_peers();
-            if (peers.empty()) {
-                std::println("No peers discovered yet.");
-            } else {
-                std::println("--- Discovered Peers ---");
-                for (size_t i = 0; i < peers.size(); ++i) {
-                    // peers[i].public_key is raw bytes string
-                    std::string hex_key = to_hex(peers[i].public_key);
-                    std::println("[{}] {} | IP: {} | Key: {}...",
-                        i, peers[i].name, peers[i].ip, hex_key.substr(0, 8));
-                }
-            }
-        }
-        else if (line.starts_with("/send ")) {
-            // Parse: /send 0 Hello World
+        if (line.starts_with("/send ")) {
+            // Format: /send @username hello world
             std::stringstream ss(line);
-            std::string cmd;
-            size_t index;
-            std::string msg;
+            std::string cmd, target, msg;
+            ss >> cmd >> target;
+            std::getline(ss, msg);
 
-            ss >> cmd >> index; // Read command and index
-            std::getline(ss, msg); // Read rest of line
-
-            // Trim leading space from msg
+            // Trim msg
             if (!msg.empty() && msg[0] == ' ') msg.erase(0, 1);
 
-            auto peers = beacon.get_peers();
-            if (index >= peers.size()) {
-                std::println("Error: Invalid peer index. Use /list.");
+            if (target.empty() || msg.empty()) {
+                std::println("Usage: /send @username message");
                 continue;
             }
 
-            const auto& target = peers[index];
-            std::string target_enc_hex = to_hex(target.enc_public_key); // Use the X25519 key
+            if (target.starts_with("@")) target.erase(0, 1);
 
-            std::println("Sending to {} ({}) ...", target.name, target.ip);
+            std::println("Looking up @{}...", target);
+            auto remote_user = router.lookup_user(target);
 
-            bool sent = router.send_text(target.ip, target.port, target_enc_hex, msg);
-            if (sent) {
-                std::println("Message Sent.");
+            if (remote_user) {
+                std::println("Found (ID: {}...). Sending...", to_hex(remote_user->id_key).substr(0, 8));
+                if (router.send_text(*remote_user, msg)) {
+                    std::println("Sent.");
+                } else {
+                    std::println("Send Failed.");
+                }
             } else {
-                std::println("Error: Failed to send (Encryption or Network error).");
+                std::println("Error: User @{} not found on this Hive.", target);
             }
-        }
-        else {
-            std::println("Unknown command.");
         }
     }
 
-    std::println("Shutting down...");
-    router.stop();
-    beacon.stop();
-    db.close();
     return 0;
 }

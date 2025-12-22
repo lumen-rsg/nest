@@ -1,52 +1,59 @@
-//
-// Created by cv2 on 22.12.2025.
-//
-
 #pragma once
 #include <string>
 #include <vector>
 #include <functional>
 #include <thread>
 #include <atomic>
-#include <zmq.hpp> // cppzmq wrapper
+#include <optional>
+#include <zmq.hpp>
 #include "../common/crypto.hpp"
 #include "../common/db.hpp"
 #include "venom.pb.h"
 
 namespace nest {
 
+    struct RemoteUser {
+        std::string username;
+        std::vector<uint8_t> id_key;   // Ed25519 (Identity)
+        std::vector<uint8_t> enc_key;  // X25519 (Encryption)
+    };
+
     class Router {
     public:
-        // Callback when a new valid message is received/decrypted
-        using OnMessageCallback = std::function<void(const std::string& sender_pk, const venom::Payload&)>;
+        using OnMessageCallback = std::function<void(const std::string& sender_hex, const venom::Payload&)>;
 
-        Router(uint32_t port, crypto::KeyPair identity, crypto::KeyPair enc_identity, Database& db);
+        Router(crypto::KeyPair identity, crypto::KeyPair enc_identity, Database& db);
         ~Router();
 
-        void start(OnMessageCallback callback);
+        void start(const std::string& server_ip, uint16_t server_port, OnMessageCallback callback);
         void stop();
 
-        // Send a text message to a specific peer (by IP and PubKey)
-        bool send_text(const std::string& target_ip, uint32_t target_port,
-                   const std::string& target_enc_pubkey_hex, const std::string& text);
+        // --- New Methods ---
+
+        // Register my username/keys with the Hive
+        bool register_on_server(const std::string& username);
+
+        // Ask Hive for a user's keys
+        std::optional<RemoteUser> lookup_user(const std::string& username);
+
+        // Send E2EE message to a resolved user
+        bool send_text(const RemoteUser& target, const std::string& text);
 
     private:
-        void listener_loop();
+        void polling_loop();
+        venom::Packet create_packet(venom::Packet::Type type);
+        void sign_packet(venom::Packet& p);
+        void process_inbound_envelope(const venom::Envelope& env);
 
-        // Handling incoming
-        void process_envelope(const std::vector<uint8_t>& data);
-
-        uint32_t port_;
-        crypto::KeyPair identity_;      // For verifying signatures
-        crypto::KeyPair enc_identity_;  // For decrypting (ECDH)
+        crypto::KeyPair identity_;
+        crypto::KeyPair enc_identity_;
         Database& db_;
         OnMessageCallback on_message_;
 
+        std::string server_addr_;
         std::atomic<bool> running_{false};
-        std::jthread listen_thread_;
-
-        // ZMQ Context (Shared)
-        zmq::context_t ctx_{};
+        std::jthread poll_thread_;
+        zmq::context_t ctx_;
     };
 
 } // namespace nest
