@@ -89,7 +89,7 @@ int main() {
     beacon.start();
 
     // B. Router (Messaging)
-    nest::Router router(port, my_keys, db);
+    nest::router router(port, my_keys, db);
 
     // Callback: What happens when we receive a message?
     router.start([&](const std::string& sender_pk_raw, const venom::Payload& p) {

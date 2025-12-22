@@ -15,13 +15,13 @@
 
 namespace nest {
 
-    class Router {
+    class router {
     public:
         // Callback when a new valid message is received/decrypted
         using OnMessageCallback = std::function<void(const std::string& sender_pk, const venom::Payload&)>;
 
-        Router(uint32_t port, crypto::KeyPair identity, Database& db);
-        ~Router();
+        router(uint32_t port, crypto::KeyPair identity, Database& db);
+        ~router();
 
         void start(OnMessageCallback callback);
         void stop();

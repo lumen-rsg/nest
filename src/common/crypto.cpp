@@ -2,7 +2,7 @@
 // Created by cv2 on 22.12.2025.
 //
 
-#include "Crypto.hpp"
+#include "crypto.hpp"
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/err.h>

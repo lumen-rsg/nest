@@ -24,23 +24,23 @@ static std::string to_str(const std::vector<uint8_t>& b) {
     return std::string(b.begin(), b.end());
 }
 
-Router::Router(uint32_t port, crypto::KeyPair identity, Database& db)
+router::router(uint32_t port, crypto::KeyPair identity, Database& db)
     : port_(port), identity_(std::move(identity)), db_(db) {}
 
-Router::~Router() { stop(); }
+router::~router() { stop(); }
 
-void Router::start(OnMessageCallback callback) {
+void router::start(OnMessageCallback callback) {
     on_message_ = std::move(callback);
     running_ = true;
     listen_thread_ = std::jthread([this] { listener_loop(); });
 }
 
-void Router::stop() {
+void router::stop() {
     running_ = false;
     ctx_.shutdown(); // Break the ZMQ loop
 }
 
-void Router::listener_loop() {
+void router::listener_loop() {
     try {
         zmq::socket_t socket(ctx_, zmq::socket_type::router);
         // Bind to all interfaces
@@ -77,7 +77,7 @@ void Router::listener_loop() {
     }
 }
 
-void Router::process_envelope(const std::vector<uint8_t>& data) {
+void router::process_envelope(const std::vector<uint8_t>& data) {
     venom::Envelope env;
     if (!env.ParseFromArray(data.data(), static_cast<int>(data.size()))) {
         std::println(stderr, "[Router] Failed to parse incoming envelope.");
@@ -140,7 +140,7 @@ void Router::process_envelope(const std::vector<uint8_t>& data) {
     }
 }
 
-bool Router::send_text(const std::string& target_ip, uint32_t target_port,
+bool router::send_text(const std::string& target_ip, uint32_t target_port,
                        const std::string& target_pubkey_hex, const std::string& text) {
 
     // 1. Prepare Payload
