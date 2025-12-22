@@ -13,6 +13,7 @@
 #include "../common/db.hpp"
 #include "router.hpp"
 #include "transfer_manager.hpp"
+#include "common/notifier.hpp"
 
 namespace fs = std::filesystem;
 
@@ -123,6 +124,7 @@ int main(int argc, char* argv[]) {
     // 3. Initialize Network Components
     nest::Router router(my_keys, my_enc_keys, db);
     nest::TransferManager transfers(router);
+    nest::Notifier notifier("Nest");
 
     // 4. Define Message Handler
     auto on_message = [&](const std::string& sender_hex, const venom::Payload& p) {
@@ -141,13 +143,18 @@ int main(int argc, char* argv[]) {
         }
 
         // B. Handle Payload Types
+        std::string notif_title = "New Message from @" + display_name;
+        std::string notif_body;
+
         if (p.type() == venom::Payload::TEXT) {
             std::println("\n>>> @{}: {}", display_name, p.body());
+            notif_body = p.body();
         }
         else if (p.type() == venom::Payload::MEDIA) {
             std::println("\n>>> @{} sent a FILE: {}", display_name, p.attachment().filename());
             std::println("    Size: {} bytes | MIME: {}", p.attachment().size_bytes(), p.attachment().mime_type());
             std::println("    [Auto-downloading to ./downloads/]");
+            notif_body = "Sent a file: " + p.attachment().filename();
 
             // Ensure directory exists
             fs::create_directories("downloads");
@@ -159,7 +166,7 @@ int main(int argc, char* argv[]) {
             std::println("\n>>> @{} sent a VOICE message ({} bytes)", display_name, p.embedded_data().size());
             // TODO: Play audio
         }
-
+        notifier.notify(notif_title, notif_body);
         // C. Save to History
         db.save_message(sender_hex, p.body(), false);
 
