@@ -4,6 +4,8 @@
 #include <chrono>
 #include <format>
 
+#include "common/file_crypto.hpp"
+
 namespace nest {
 
 // --- Helpers ---
@@ -130,26 +132,22 @@ std::optional<RemoteUser> Router::lookup_user(const std::string& username) {
     return std::nullopt;
 }
 
-bool Router::send_text(const RemoteUser& target, const std::string& text) {
-    // 1. Prepare Payload
-    venom::Payload payload;
-    payload.set_type(venom::Payload::TEXT);
-    payload.set_timestamp(static_cast<uint64_t>(std::time(nullptr)));
-    payload.set_body(text);
-
-    std::string payload_bytes; payload.SerializeToString(&payload_bytes);
+    bool Router::send_payload(const RemoteUser& target, const venom::Payload& payload) {
+    // 1. Serialize Payload
+    std::string payload_bytes;
+    payload.SerializeToString(&payload_bytes);
     std::vector<uint8_t> payload_raw(payload_bytes.begin(), payload_bytes.end());
 
-    // 2. Encrypt (Using Target's X25519 Encryption Key)
+    // 2. Encrypt (AES-GCM)
     auto eph_keys = *crypto::generate_ephemeral_key();
     auto secret = *crypto::derive_secret(eph_keys.private_key, target.enc_key);
-    auto enc_res = *crypto::encrypt_aes_gcm(payload_raw, secret); // [Nonce(12) + Cipher + Tag(16)]
+    auto enc_res = *crypto::encrypt_aes_gcm(payload_raw, secret);
 
-    // Split for Proto
+    // Split
     std::vector<uint8_t> nonce(enc_res.begin(), enc_res.begin() + 12);
     std::vector<uint8_t> cipher(enc_res.begin() + 12, enc_res.end());
 
-    // Sign the Ciphertext (Using MY Identity Key)
+    // Sign
     auto sig = *crypto::sign(cipher, identity_.private_key);
 
     // 3. Create Envelope
@@ -160,34 +158,24 @@ bool Router::send_text(const RemoteUser& target, const std::string& text) {
     env.set_ciphertext(to_str(cipher));
     env.set_signature(to_str(sig));
 
-    // 4. Wrap in Packet
+    // 4. Create Packet
     venom::Packet packet = create_packet(venom::Packet::SEND);
-
-    // ROUTING: We route based on the Identity Key (Ed25519), not the Enc key
     packet.set_target_id_pubkey(to_str(target.id_key));
-
     *packet.mutable_envelope() = env;
     sign_packet(packet);
 
     // 5. Send
-    try {
-        zmq::socket_t sock(ctx_, zmq::socket_type::req);
-        sock.connect(server_addr_);
+    venom::Response resp;
+    return send_request(packet, resp);
+}
 
-        std::string p_data; packet.SerializeToString(&p_data);
-        sock.send(zmq::buffer(p_data), zmq::send_flags::none);
-
-        zmq::message_t reply;
-        sock.set(zmq::sockopt::rcvtimeo, 2000);
-        if (sock.recv(reply, zmq::recv_flags::none)) {
-            venom::Response resp;
-            if (resp.ParseFromArray(reply.data(), static_cast<int>(reply.size()))) {
-                return resp.status() == 200;
-            }
-        }
-    } catch (...) {}
-
-    return false;
+    // Update send_text to be a wrapper
+    bool Router::send_text(const RemoteUser& target, const std::string& text) {
+    venom::Payload p;
+    p.set_type(venom::Payload::TEXT);
+    p.set_timestamp(time(nullptr));
+    p.set_body(text);
+    return send_payload(target, p);
 }
 
 void Router::polling_loop() {
@@ -286,6 +274,137 @@ void Router::process_inbound_envelope(const venom::Envelope& env) {
         // Network error
     }
     return std::nullopt;
+}
+
+
+bool Router::send_request(venom::Packet& p, venom::Response& out_resp) {
+    // 1. Sign
+    sign_packet(p);
+
+    // 2. Serialize
+    std::string p_data;
+    if (!p.SerializeToString(&p_data)) return false;
+
+    // 3. Network Op (Blocking)
+    try {
+        zmq::socket_t sock(ctx_, zmq::socket_type::req);
+        sock.connect(server_addr_);
+        sock.send(zmq::buffer(p_data), zmq::send_flags::none);
+
+        zmq::message_t reply;
+        sock.set(zmq::sockopt::rcvtimeo, 5000); // 5s timeout default
+
+        if (!sock.recv(reply, zmq::recv_flags::none)) return false;
+
+        // 4. Parse
+        if (!out_resp.ParseFromArray(reply.data(), static_cast<int>(reply.size()))) return false;
+
+        return (out_resp.status() == 200);
+
+    } catch (...) {
+        return false;
+    }
+}
+
+// --- File Logic ---
+
+bool Router::upload_file(const std::string& filepath, venom::Attachment& out_metadata) {
+    using namespace nest::crypto;
+
+    // 1. Init Local Encryption
+    FileEncryptor encryptor(filepath);
+    auto meta_res = encryptor.init();
+    if (!meta_res) return false;
+    FileMetadata meta = *meta_res;
+
+    // 2. Request Upload Session
+    std::string session_id;
+    {
+        venom::Packet p = create_packet(venom::Packet::UPLOAD_INIT);
+        venom::Response resp;
+        if (!send_request(p, resp)) return false;
+        session_id = resp.session_id();
+    }
+    if (session_id.empty()) return false;
+
+    std::println("  [Upload] Session: {}", session_id);
+
+    // 3. Loop Chunks
+    size_t total = encryptor.get_total_chunks();
+    for (size_t i = 0; i < total; ++i) {
+        auto chunk_res = encryptor.get_encrypted_chunk(i);
+        if (!chunk_res) return false;
+
+        venom::Packet p = create_packet(venom::Packet::UPLOAD_CHUNK);
+        p.set_session_id(session_id);
+
+        auto* ch = p.mutable_file_chunk();
+        ch->set_chunk_index(static_cast<uint32_t>(i));
+        ch->set_data(to_str(*chunk_res));
+
+        venom::Response resp;
+        if (!send_request(p, resp)) {
+            std::println(stderr, "  [Upload] Failed at chunk {}/{}", i, total);
+            return false;
+        }
+        if (i % 10 == 0) std::print("."); // Progress
+    }
+
+    // 4. Finalize
+    std::string final_fid;
+    {
+        venom::Packet p = create_packet(venom::Packet::UPLOAD_FINALIZE);
+        p.set_session_id(session_id);
+        venom::Response resp;
+        if (!send_request(p, resp)) return false;
+        final_fid = resp.file_id();
+    }
+
+    // 5. Populate Metadata for the E2EE Message
+    out_metadata.set_file_id(final_fid);
+    out_metadata.set_filename(std::filesystem::path(filepath).filename().string());
+    out_metadata.set_size_bytes(meta.file_size);
+    out_metadata.set_key(to_str(meta.key));
+    out_metadata.set_nonce(to_str(meta.nonce));
+    out_metadata.set_total_chunks(static_cast<uint32_t>(total));
+
+    return true;
+}
+
+bool Router::download_file(const venom::Attachment& att, const std::string& output_path) {
+    using namespace nest::crypto;
+
+    // 1. Init Local Decryptor
+    FileDecryptor decryptor(output_path, to_vec(att.key()), to_vec(att.nonce()));
+    if (!decryptor.init()) return false;
+
+    std::println("  [Download] {} chunks...", att.total_chunks());
+
+    // 2. Loop Chunks
+    for (uint32_t i = 0; i < att.total_chunks(); ++i) {
+        venom::Packet p = create_packet(venom::Packet::DOWNLOAD_CHUNK);
+        p.set_file_id(att.file_id());
+        p.mutable_file_chunk()->set_chunk_index(i);
+
+        venom::Response resp;
+        if (!send_request(p, resp)) return false;
+
+        if (resp.has_file_chunk()) {
+            auto enc_data = to_vec(resp.file_chunk().data());
+
+            // Decrypt and Write to disk immediately
+            auto res = decryptor.write_chunk(i, enc_data);
+            if (!res) {
+                std::println(stderr, "  [Download] Decrypt Fail Chunk {}", i);
+                return false;
+            }
+        } else {
+            return false;
+        }
+        if (i % 10 == 0) std::print(".");
+    }
+    std::println("\n  [Download] Complete.");
+    return true;
 }
 
 } // namespace nest

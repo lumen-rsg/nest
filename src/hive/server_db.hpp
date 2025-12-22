@@ -42,6 +42,14 @@ public:
                 envelope_blob BLOB,
                 created_at INTEGER
             );
+            CREATE TABLE IF NOT EXISTS file_metadata (
+                file_hash TEXT PRIMARY KEY,  -- SHA256 of the encrypted content (Deduplication ID)
+                uploader_pubkey BLOB,        -- Who uploaded this? (For abuse handling)
+                size_bytes INTEGER,
+                mime_type TEXT,
+                uploaded_at INTEGER,
+                ref_count INTEGER DEFAULT 1  -- How many messages reference this? (For GC later)
+            );
         )";
         char* err = nullptr;
         if (sqlite3_exec(db_, sql, nullptr, nullptr, &err) != SQLITE_OK) {
@@ -155,6 +163,7 @@ public:
 
         return msgs;
     }
+
 
 private:
     sqlite3* db_ = nullptr;

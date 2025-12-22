@@ -1,53 +1,13 @@
 syntax = "proto3";
 package venom;
 
-message Packet {
-    enum Type {
-        UNKNOWN = 0;
-        REGISTER = 1;
-        LOOKUP_USER = 2;       // By Username (@cv2 -> Key)
-        LOOKUP_USER_BY_ID = 3; // By Key (Key -> @cv2) <--- NEW
-        SEND = 4;
-        FETCH = 5;
-    }
-
-    Type type = 1;
-
-    // Auth
-    bytes sender_id_pubkey = 2;
-    bytes signature = 3;
-    uint64 timestamp = 4;
-
-    RegisterPayload register = 5;
-    string lookup_username = 6;
-    bytes lookup_user_id = 7;     // <--- NEW: For LOOKUP_USER_BY_ID
-
-    // Routing
-    bytes target_id_pubkey = 8;
-    Envelope envelope = 9;
-}
+// --- 1. Sub-Messages (Definitions first) ---
 
 message RegisterPayload {
-    string username = 1;        // "cv2"
-    bytes enc_pubkey = 2;       // X25519 Key (Public Directory needs this)
-}
-
-message Response {
-    uint32 status = 1;       // 200 OK, 409 Conflict (User exists), 404 Not Found
-    string error_msg = 2;
-
-    // Return Data
-    UserInfo user_info = 3;             // Result of LOOKUP
-    repeated Envelope pending_messages = 4; // Result of FETCH
-}
-
-message UserInfo {
     string username = 1;
-    bytes id_pubkey = 2;   // Ed25519
-    bytes enc_pubkey = 3;  // X25519
+    bytes enc_pubkey = 2;
 }
 
-// ... Envelope, Payload remain same ...
 message Envelope {
     bytes sender_identity_key = 1;
     bytes ephemeral_pubkey = 2;
@@ -56,9 +16,91 @@ message Envelope {
     bytes signature = 5;
 }
 
+message UserInfo {
+    string username = 1;
+    bytes id_pubkey = 2;
+    bytes enc_pubkey = 3;
+}
+
+message FileChunk {
+    string file_id = 1;
+    uint32 chunk_index = 2;
+    uint32 total_chunks = 3;
+    bytes data = 4;
+}
+
+// --- 2. Inner E2EE Payloads ---
+
+message Attachment {
+    string file_id = 1;
+    string filename = 2;
+    uint64 size_bytes = 3;
+    bytes key = 4;
+    bytes nonce = 5;
+    uint32 total_chunks = 6;
+    string mime_type = 7;
+}
+
 message Payload {
-    enum Type { UNKNOWN=0; TEXT=1; }
+    enum Type {
+        TEXT = 0;
+        VOICE = 1;
+        MEDIA = 2;
+    }
     Type type = 1;
     uint64 timestamp = 2;
     string body = 3;
+    bytes embedded_data = 4;
+    Attachment attachment = 5;
+}
+
+// --- 3. Transport Packets ---
+
+message Packet {
+    enum Type {
+        UNKNOWN = 0;
+        REGISTER = 1;
+        LOOKUP_USER = 2;
+        LOOKUP_USER_BY_ID = 3;
+        SEND = 4;
+        FETCH = 5;
+
+        // File Transfer
+        UPLOAD_INIT = 10;
+        UPLOAD_CHUNK = 11;
+        UPLOAD_FINALIZE = 12;
+        DOWNLOAD_CHUNK = 13;
+    }
+
+    Type type = 1;
+    bytes sender_id_pubkey = 2;
+    bytes signature = 3;
+    uint64 timestamp = 4;
+
+    // Payloads
+    RegisterPayload register = 5;
+    string lookup_username = 6;
+    bytes lookup_user_id = 7;
+
+    // For SEND
+    bytes target_id_pubkey = 8;
+    Envelope envelope = 9;
+
+    // For Files
+    string session_id = 10;
+    FileChunk file_chunk = 11;
+    string file_id = 12;
+}
+
+message Response {
+    uint32 status = 1;
+    string error_msg = 2;
+
+    UserInfo user_info = 3;
+    repeated Envelope pending_messages = 4;
+
+    // File Responses
+    string session_id = 5;
+    string file_id = 6;
+    FileChunk file_chunk = 7;
 }

@@ -40,11 +40,19 @@ namespace nest {
         bool send_text(const RemoteUser& target, const std::string& text);
         std::optional<RemoteUser> lookup_user_by_id(const std::string& id_hex);
 
+        // Upload a file securely
+        bool upload_file(const std::string& filepath, venom::Attachment& out_metadata);
+
+        // Download a file securely
+        bool download_file(const venom::Attachment& att, const std::string& output_path);
+        bool send_payload(const RemoteUser& target, const venom::Payload& payload);
+
     private:
         void polling_loop();
         venom::Packet create_packet(venom::Packet::Type type);
         void sign_packet(venom::Packet& p);
         void process_inbound_envelope(const venom::Envelope& env);
+        bool send_request(venom::Packet& p, venom::Response& out_resp);
 
         crypto::KeyPair identity_;
         crypto::KeyPair enc_identity_;
