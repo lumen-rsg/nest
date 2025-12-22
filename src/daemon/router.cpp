@@ -24,23 +24,23 @@ static std::string to_str(const std::vector<uint8_t>& b) {
     return std::string(b.begin(), b.end());
 }
 
-router::router(uint32_t port, crypto::KeyPair identity, Database& db)
-    : port_(port), identity_(std::move(identity)), db_(db) {}
+Router::Router(uint32_t port, crypto::KeyPair identity, crypto::KeyPair enc_identity, Database& db)
+    : port_(port), identity_(std::move(identity)), enc_identity_(std::move(enc_identity)), db_(db) {}
 
-router::~router() { stop(); }
+Router::~Router() { stop(); }
 
-void router::start(OnMessageCallback callback) {
+void Router::start(OnMessageCallback callback) {
     on_message_ = std::move(callback);
     running_ = true;
     listen_thread_ = std::jthread([this] { listener_loop(); });
 }
 
-void router::stop() {
+void Router::stop() {
     running_ = false;
     ctx_.shutdown(); // Break the ZMQ loop
 }
 
-void router::listener_loop() {
+void Router::listener_loop() {
     try {
         zmq::socket_t socket(ctx_, zmq::socket_type::router);
         // Bind to all interfaces
@@ -77,14 +77,12 @@ void router::listener_loop() {
     }
 }
 
-void router::process_envelope(const std::vector<uint8_t>& data) {
+void Router::process_envelope(const std::vector<uint8_t>& data) {
     venom::Envelope env;
     if (!env.ParseFromArray(data.data(), static_cast<int>(data.size()))) {
         std::println(stderr, "[Router] Failed to parse incoming envelope.");
         return;
     }
-
-
 
     // 1. Extract Raw Bytes directly (No Hex conversion needed here)
     std::vector<uint8_t> sender_id_raw(env.sender_identity_key().begin(), env.sender_identity_key().end());
@@ -101,7 +99,7 @@ void router::process_envelope(const std::vector<uint8_t>& data) {
     }
 
     // 3. Derive Shared Secret (My Priv + Sender Ephemeral Pub)
-    auto secret_res = crypto::derive_secret(identity_.private_key, eph_pub);
+    auto secret_res = crypto::derive_secret(enc_identity_.private_key, eph_pub);
     if (!secret_res) {
         std::println(stderr, "[Router] ECDH derivation failed.");
         return;
@@ -140,8 +138,8 @@ void router::process_envelope(const std::vector<uint8_t>& data) {
     }
 }
 
-bool router::send_text(const std::string& target_ip, uint32_t target_port,
-                       const std::string& target_pubkey_hex, const std::string& text) {
+    bool Router::send_text(const std::string& target_ip, uint32_t target_port,
+                       const std::string& target_enc_pubkey_hex, const std::string& text){
 
     // 1. Prepare Payload
     venom::Payload p;
@@ -160,7 +158,7 @@ bool router::send_text(const std::string& target_ip, uint32_t target_port,
     auto eph_keys = *eph_keys_res;
 
     // B. Get Target Public Key
-    auto target_pub_bytes = from_hex(target_pubkey_hex);
+    auto target_pub_bytes = from_hex(target_enc_pubkey_hex);
 
     // C. Derive Shared Secret (My Ephemeral Priv + Target Static Pub)
     auto secret_res = crypto::derive_secret(eph_keys.private_key, target_pub_bytes);

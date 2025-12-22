@@ -19,14 +19,15 @@ namespace nest {
         std::string ip;
         uint32_t port;
         std::string name;
-        std::string public_key; // Hex or raw bytes
+        std::string public_key;     // Signing
+        std::string enc_public_key; // Encryption <-- NEW
         uint64_t last_seen;
     };
 
     class BeaconService {
     public:
         // Change: Pass the full KeyPair instead of just a string
-        BeaconService(uint32_t zmq_port, std::string name, crypto::KeyPair identity);
+        BeaconService(uint32_t port, std::string name, crypto::KeyPair identity, crypto::KeyPair enc_identity);
         ~BeaconService();
 
         void start();
@@ -48,7 +49,8 @@ namespace nest {
         std::string display_name_;
 
         // Change: Store the keys
-        crypto::KeyPair identity_;
+        crypto::KeyPair identity_;     // Ed25519
+        crypto::KeyPair enc_identity_; // X25519 <-- NEW
 
         const int discovery_port_ = 4444;
 

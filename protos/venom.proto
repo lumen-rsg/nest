@@ -26,5 +26,6 @@ message Payload {
 message Beacon {
     string display_name = 1;
     uint32 port = 2;
-    bytes public_key = 3;
+    bytes public_key = 3;      // Ed25519 (Identity / Signing)
+    bytes enc_public_key = 4;  // X25519  (Encryption / ECDH) <-- NEW
 }

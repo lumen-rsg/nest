@@ -12,7 +12,8 @@
 namespace nest {
 
     struct StoredIdentity {
-        crypto::KeyPair keys;
+        crypto::KeyPair keys;     // Signing (Ed25519)
+        crypto::KeyPair enc_keys; // Encryption (X25519) <-- NEW
         std::string name;
     };
 
@@ -30,7 +31,7 @@ namespace nest {
         bool has_identity();
 
         // Save my new identity (Encrypted)
-        bool save_identity(const crypto::KeyPair& keys, const std::string& name);
+        bool save_identity(const crypto::KeyPair& id_keys, const crypto::KeyPair& enc_keys, const std::string& name);
 
         // Load my identity (Decrypted)
         std::optional<StoredIdentity> load_identity();

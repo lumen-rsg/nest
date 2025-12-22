@@ -48,29 +48,29 @@ int main() {
 
     // 2. Identity Management
     // ----------------------
-    nest::crypto::KeyPair my_keys;
+    nest::crypto::KeyPair my_keys;     // Ed25519
+    nest::crypto::KeyPair my_enc_keys; // X25519
     std::string my_name;
 
     if (db.has_identity()) {
-        std::println("[Main] Loading identity...");
         auto id = db.load_identity();
-        if (!id) {
-            std::println(stderr, "FATAL: Incorrect password or corrupted DB.");
-            return 1;
-        }
+        if (!id) { /* handle error */ }
         my_keys = id->keys;
+        my_enc_keys = id->enc_keys; // Load X25519
         my_name = id->name;
     } else {
         std::println("[Main] First run. Generating 25519 Keys...");
-        auto res = nest::crypto::generate_identity_key();
-        if (!res) return 1;
+        auto res_id = nest::crypto::generate_identity_key();   // Ed25519
+        auto res_enc = nest::crypto::generate_ephemeral_key(); // X25519 (Reusing this function is fine, it generates X25519)
+        if (!res_id || !res_enc) return 1;
 
-        my_keys = *res;
+        my_keys = *res_id;
+        my_enc_keys = *res_enc;
         // Generate a random name for testing
         std::srand(std::time(nullptr));
         my_name = "User_" + std::to_string(std::rand() % 9000 + 1000);
 
-        if (!db.save_identity(my_keys, my_name)) {
+        if (!db.save_identity(my_keys, my_enc_keys, my_name)) {
             std::println(stderr, "FATAL: Could not save identity.");
             return 1;
         }
@@ -85,11 +85,11 @@ int main() {
     uint32_t port = 5555;
 
     // A. Beacon (Discovery)
-    nest::BeaconService beacon(port, my_name, my_keys);
+    nest::BeaconService beacon(port, my_name, my_keys, my_enc_keys);
     beacon.start();
 
     // B. Router (Messaging)
-    nest::router router(port, my_keys, db);
+    nest::Router router(port, my_keys, my_enc_keys, db);
 
     // Callback: What happens when we receive a message?
     router.start([&](const std::string& sender_pk_raw, const venom::Payload& p) {
@@ -160,11 +160,11 @@ int main() {
             }
 
             const auto& target = peers[index];
-            std::string target_hex = to_hex(target.public_key);
+            std::string target_enc_hex = to_hex(target.enc_public_key); // Use the X25519 key
 
             std::println("Sending to {} ({}) ...", target.name, target.ip);
 
-            bool sent = router.send_text(target.ip, target.port, target_hex, msg);
+            bool sent = router.send_text(target.ip, target.port, target_enc_hex, msg);
             if (sent) {
                 std::println("Message Sent.");
             } else {

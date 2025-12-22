@@ -128,9 +128,14 @@ bool Database::has_identity() {
     return exists;
 }
 
-bool Database::save_identity(const crypto::KeyPair& keys, const std::string& name) {
-    auto enc_priv = encrypt_field(keys.private_key);
-    auto enc_pub  = encrypt_field(keys.public_key);
+bool Database::save_identity(const crypto::KeyPair& id_keys, const crypto::KeyPair& enc_keys, const std::string& name) {
+    auto enc_priv = encrypt_field(id_keys.private_key);
+    auto enc_pub  = encrypt_field(id_keys.public_key);
+
+    // Encrypt the new X25519 keys
+    auto enc_x_priv = encrypt_field(enc_keys.private_key);
+    auto enc_x_pub  = encrypt_field(enc_keys.public_key);
+
     auto enc_name = encrypt_field(name);
 
     sqlite3_stmt* stmt;
@@ -146,8 +151,11 @@ bool Database::save_identity(const crypto::KeyPair& keys, const std::string& nam
 
     save("id_priv", enc_priv);
     save("id_pub", enc_pub);
-    save("id_name", enc_name);
 
+    save("enc_priv", enc_x_priv); // New
+    save("enc_pub", enc_x_pub);   // New
+
+    save("id_name", enc_name);
     return true;
 }
 
@@ -173,9 +181,15 @@ std::optional<StoredIdentity> Database::load_identity() {
 
     id.keys.private_key = decrypt_bytes(load("id_priv"));
     id.keys.public_key  = decrypt_bytes(load("id_pub"));
-    id.name             = decrypt_string(load("id_name"));
 
-    if (id.keys.private_key.empty()) return std::nullopt; // Decryption failed
+    id.enc_keys.private_key = decrypt_bytes(load("enc_priv")); // New
+    id.enc_keys.public_key  = decrypt_bytes(load("enc_pub"));  // New
+
+    id.name = decrypt_string(load("id_name"));
+
+    // Check if new keys exist (backward compatibility: if missing, return nullopt or regenerate)
+    if (id.enc_keys.private_key.empty()) return std::nullopt;
+
     return id;
 }
 

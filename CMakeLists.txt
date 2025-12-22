@@ -12,16 +12,43 @@ find_package(OpenSSL 3.0 REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(Threads REQUIRED)
 
-# 1. ZeroMQ (PkgConfig)
+# --- ZeroMQ Setup (macOS Robust) ---
+# 1. Find the C++ Header (zmq.hpp) explicitly
+find_path(CPPZMQ_INCLUDE_DIR
+        NAMES zmq.hpp
+        HINTS
+        /opt/homebrew/include
+        /usr/local/include
+        /usr/include
+        DOC "Path to zmq.hpp"
+)
+
+if(NOT CPPZMQ_INCLUDE_DIR)
+    message(FATAL_ERROR "Could not find zmq.hpp. Run 'brew install cppzmq' on macOS or ensure it is installed.")
+endif()
+
+# 2. Find the C Library (libzmq)
+find_library(ZMQ_LIBRARY
+        NAMES zmq libzmq
+        HINTS
+        /opt/homebrew/lib
+        /usr/local/lib
+        /usr/lib
+)
+
+if(NOT ZMQ_LIBRARY)
+    message(FATAL_ERROR "Could not find libzmq.")
+endif()
+
+message(STATUS "Found ZMQ Header: ${CPPZMQ_INCLUDE_DIR}")
+message(STATUS "Found ZMQ Lib: ${ZMQ_LIBRARY}")
+
+# --- Protobuf Setup ---
+# Find protoc executable for manual generation
+find_program(PROTOC_EXECUTABLE protoc REQUIRED)
+
+# Use PkgConfig for the library links (handles Abseil deps)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(ZMQ REQUIRED IMPORTED_TARGET libzmq)
-
-# 2. Protobuf (Hybrid)
-# A) Use standard Module mode to get 'protobuf_generate_cpp' and 'protoc'
-#    (We explicitly DISABLE Config mode here to avoid the target conflict error)
-find_package(Protobuf REQUIRED MODULE)
-
-# B) Use PkgConfig to get the actual Link Libraries (includes Abseil deps automatically)
 pkg_check_modules(PROTOBUF_PKG REQUIRED IMPORTED_TARGET protobuf)
 
 # --- Subdirectories ---

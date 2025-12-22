@@ -9,8 +9,8 @@
 
 namespace nest {
 
-BeaconService::BeaconService(uint32_t zmq_port, std::string name, crypto::KeyPair identity)
-    : zmq_port_(zmq_port), display_name_(std::move(name)), identity_(std::move(identity)) {}
+BeaconService::BeaconService(uint32_t zmq_port, std::string name, crypto::KeyPair identity, crypto::KeyPair enc_identity)
+    : zmq_port_(zmq_port), display_name_(std::move(name)), identity_(std::move(identity)), enc_identity_(std::move(enc_identity)) {}
 
 BeaconService::~BeaconService() {
     stop();
@@ -46,6 +46,7 @@ void BeaconService::broadcast_loop() {
         b.set_display_name(display_name_);
         b.set_port(zmq_port_);
         b.set_public_key(to_string(identity_.public_key));
+        b.set_enc_public_key(to_string(enc_identity_.public_key)); // <-- Broadcast it
 
         venom::Payload p;
         p.set_type(venom::Payload::BEACON);
@@ -153,6 +154,7 @@ void BeaconService::listen_loop() {
                     b.port(),
                     b.display_name(),
                     b.public_key(),
+                    b.enc_public_key(), // <-- Store it
                     static_cast<uint64_t>(time(nullptr))
                 };
             }
