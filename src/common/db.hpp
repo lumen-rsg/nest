@@ -17,6 +17,14 @@ namespace nest {
         std::string name;
     };
 
+    struct StoredMessage {
+        std::string sender_key; // Hex
+        std::string sender_name; // Cached name
+        std::string body;
+        uint64_t timestamp;
+        bool is_mine; // Did I send it?
+    };
+
     class Database {
     public:
         Database();
@@ -44,6 +52,13 @@ namespace nest {
         // Get all contacts
         struct Contact { std::string pubkey; std::string name; std::string ip; };
         std::vector<Contact> get_contacts();
+
+        bool save_message(const std::string& peer_key, const std::string& body, bool is_mine);
+        std::vector<StoredMessage> get_chat_history(const std::string& peer_key);
+
+        // --- Contact Cache (Key -> Name) ---
+        bool set_contact_name(const std::string& key_hex, const std::string& name);
+        std::string get_contact_name(const std::string& key_hex); // Returns name or empty
 
     private:
         // Raw SQLite handle

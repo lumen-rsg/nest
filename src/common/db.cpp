@@ -53,6 +53,12 @@ bool Database::init_tables() {
             name_enc BLOB,           -- Encrypted Name
             ip_enc BLOB              -- Encrypted IP (Metadata protection)
         );
+        CREATE TABLE IF NOT EXISTS messages (
+           peer_key TEXT,
+           body_enc BLOB,
+           is_mine INTEGER,
+           timestamp INTEGER
+        );
     )";
     char* err = nullptr;
     if (sqlite3_exec(db_, sql, nullptr, nullptr, &err) != SQLITE_OK) {
@@ -204,6 +210,43 @@ bool Database::save_contact(const std::string& pubkey_hex, const std::string& na
     sqlite3_bind_blob(stmt, 2, enc_name.data(), static_cast<int>(enc_name.size()), SQLITE_STATIC);
     sqlite3_bind_blob(stmt, 3, enc_ip.data(), static_cast<int>(enc_ip.size()), SQLITE_STATIC);
 
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE);
+}
+
+    bool Database::save_message(const std::string& peer_key, const std::string& body, bool is_mine) {
+    auto body_enc = encrypt_field(body); // Encrypt content locally!
+    sqlite3_stmt* stmt;
+    const char* sql = "INSERT INTO messages (peer_key, body_enc, is_mine, timestamp) VALUES (?, ?, ?, ?)";
+    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, peer_key.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_blob(stmt, 2, body_enc.data(), body_enc.size(), SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 3, is_mine ? 1 : 0);
+    sqlite3_bind_int64(stmt, 4, time(nullptr));
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE);
+}
+
+    std::string Database::get_contact_name(const std::string& key_hex) {
+    sqlite3_stmt* stmt;
+    sqlite3_prepare_v2(db_, "SELECT name FROM contacts WHERE pubkey = ?", -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, key_hex.c_str(), -1, SQLITE_STATIC);
+    std::string name;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        name = (const char*)sqlite3_column_text(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return name;
+}
+
+    bool Database::set_contact_name(const std::string& key_hex, const std::string& name) {
+    sqlite3_stmt* stmt;
+    const char* sql = "INSERT OR REPLACE INTO contacts (pubkey, name) VALUES (?, ?)";
+    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, key_hex.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, name.c_str(), -1, SQLITE_STATIC);
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
     return (rc == SQLITE_DONE);

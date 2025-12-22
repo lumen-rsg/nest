@@ -249,4 +249,43 @@ void Router::process_inbound_envelope(const venom::Envelope& env) {
     }
 }
 
+    std::optional<RemoteUser> Router::lookup_user_by_id(const std::string& id_hex) {
+    venom::Packet p = create_packet(venom::Packet::LOOKUP_USER_BY_ID);
+
+    // Convert the Hex Input (e.g., "a1b2...") to Raw Bytes for the packet
+    std::vector<uint8_t> raw_id = from_hex(id_hex);
+    p.set_lookup_user_id(to_str(raw_id));
+
+    sign_packet(p);
+
+    try {
+        zmq::socket_t sock(ctx_, zmq::socket_type::req);
+        sock.connect(server_addr_);
+
+        std::string p_data;
+        p.SerializeToString(&p_data);
+        sock.send(zmq::buffer(p_data), zmq::send_flags::none);
+
+        zmq::message_t reply;
+        sock.set(zmq::sockopt::rcvtimeo, 2000); // 2s timeout
+
+        if (sock.recv(reply, zmq::recv_flags::none)) {
+            venom::Response resp;
+            if (resp.ParseFromArray(reply.data(), static_cast<int>(reply.size()))) {
+                if (resp.status() == 200 && resp.has_user_info()) {
+                    const auto& u = resp.user_info();
+                    return RemoteUser{
+                        u.username(),
+                        to_vec(u.id_pubkey()),
+                        to_vec(u.enc_pubkey())
+                    };
+                }
+            }
+        }
+    } catch (...) {
+        // Network error
+    }
+    return std::nullopt;
+}
+
 } // namespace nest

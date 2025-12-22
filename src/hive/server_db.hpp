@@ -89,6 +89,34 @@ public:
         return res;
     }
 
+    std::optional<DBUserInfo> lookup_by_id(const std::vector<uint8_t>& id_pubkey) {
+        sqlite3_stmt* stmt;
+        const char* sql = "SELECT username, enc_pubkey FROM users WHERE id_pubkey = ?";
+
+        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return std::nullopt;
+
+        sqlite3_bind_blob(stmt, 1, id_pubkey.data(), static_cast<int>(id_pubkey.size()), SQLITE_STATIC);
+
+        std::optional<DBUserInfo> res;
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            // We found the user!
+            res = DBUserInfo{};
+            res->id_pubkey = id_pubkey; // We already know the ID key
+
+            // 1. Get Username
+            res->username = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+
+            // 2. Get Encryption Key
+            const void* b = sqlite3_column_blob(stmt, 1);
+            int bytes = sqlite3_column_bytes(stmt, 1);
+            res->enc_pubkey.assign((const uint8_t*)b, (const uint8_t*)b + bytes);
+        }
+        sqlite3_finalize(stmt);
+        return res;
+    }
+
+
+
     // --- Inbox ---
 
     void store_message(const std::vector<uint8_t>& target_id, const std::string& envelope_blob) {

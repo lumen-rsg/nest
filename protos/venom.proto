@@ -4,10 +4,11 @@ package venom;
 message Packet {
     enum Type {
         UNKNOWN = 0;
-        REGISTER = 1;      // "I want to be @cv2"
-        LOOKUP_USER = 2;   // "Who is @cv2?"
-        SEND = 3;          // "Msg for UserID X" (Routing is still by ID for speed)
-        FETCH = 4;         // "Get my msgs"
+        REGISTER = 1;
+        LOOKUP_USER = 2;       // By Username (@cv2 -> Key)
+        LOOKUP_USER_BY_ID = 3; // By Key (Key -> @cv2) <--- NEW
+        SEND = 4;
+        FETCH = 5;
     }
 
     Type type = 1;
@@ -17,13 +18,13 @@ message Packet {
     bytes signature = 3;
     uint64 timestamp = 4;
 
-    // Payload for specific actions
     RegisterPayload register = 5;
-    string lookup_username = 6;    // For LOOKUP_USER
+    string lookup_username = 6;
+    bytes lookup_user_id = 7;     // <--- NEW: For LOOKUP_USER_BY_ID
 
-    // Routing (For SEND)
-    bytes target_id_pubkey = 7;
-    Envelope envelope = 8;
+    // Routing
+    bytes target_id_pubkey = 8;
+    Envelope envelope = 9;
 }
 
 message RegisterPayload {

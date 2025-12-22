@@ -38,6 +38,7 @@ namespace nest {
 
         // Send E2EE message to a resolved user
         bool send_text(const RemoteUser& target, const std::string& text);
+        std::optional<RemoteUser> lookup_user_by_id(const std::string& id_hex);
 
     private:
         void polling_loop();
