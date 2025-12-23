@@ -10,7 +10,7 @@
 #include <unistd.h>
 
 // Third-party
-#include <nlohmann/json.hpp>
+#include "../common/json.hpp"
 
 // Internal Modules
 #include "../common/crypto.hpp"
