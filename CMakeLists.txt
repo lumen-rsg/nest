@@ -51,6 +51,44 @@ find_program(PROTOC_EXECUTABLE protoc REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PROTOBUF_PKG REQUIRED IMPORTED_TARGET protobuf)
 
+# --- GUI Client (Nectar) Dependencies ---
+include(FetchContent)
+
+# GLFW (Windowing)
+FetchContent_Declare(
+        glfw
+        GIT_REPOSITORY https://github.com/glfw/glfw.git
+        GIT_TAG        3.3.8
+)
+FetchContent_MakeAvailable(glfw)
+
+# ImGui
+FetchContent_Declare(
+        imgui
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG        v1.89.9
+)
+# This downloads the sources into ${imgui_SOURCE_DIR} but doesn't run their CMakeLists
+FetchContent_GetProperties(imgui)
+if(NOT imgui_POPULATED)
+    FetchContent_Populate(imgui)
+endif()
+
+# --- Manually create a library from the fetched ImGui sources ---
+# This is more reliable than relying on their build system.
+file(GLOB IMGUI_SOURCES
+        "${imgui_SOURCE_DIR}/imgui.cpp"
+        "${imgui_SOURCE_DIR}/imgui_draw.cpp"
+        "${imgui_SOURCE_DIR}/imgui_tables.cpp"
+        "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
+)
+add_library(imgui_lib STATIC ${IMGUI_SOURCES})
+
+# Make sure targets that link against us get the include path
+target_include_directories(imgui_lib PUBLIC
+        ${imgui_SOURCE_DIR}
+)
+
 # --- Subdirectories ---
 add_subdirectory(protos)
 add_subdirectory(src)

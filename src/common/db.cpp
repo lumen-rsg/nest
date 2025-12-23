@@ -252,4 +252,39 @@ bool Database::save_contact(const std::string& pubkey_hex, const std::string& na
     return (rc == SQLITE_DONE);
 }
 
+    std::vector<StoredMessage> Database::get_chat_history(const std::string& peer_key) {
+    std::vector<StoredMessage> history;
+    sqlite3_stmt* stmt;
+
+    // Order by timestamp Ascending (oldest first)
+    const char* sql = "SELECT body_enc, is_mine, timestamp FROM messages WHERE peer_key = ? ORDER BY timestamp ASC";
+
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return history;
+    }
+
+    sqlite3_bind_text(stmt, 1, peer_key.c_str(), -1, SQLITE_STATIC);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        StoredMessage msg;
+        msg.sender_key = peer_key; // For context
+
+        // 1. Decrypt Body
+        const void* blob = sqlite3_column_blob(stmt, 0);
+        int bytes = sqlite3_column_bytes(stmt, 0);
+        std::vector<uint8_t> encrypted_body((const uint8_t*)blob, (const uint8_t*)blob + bytes);
+
+        // Use the DB's master key to decrypt the field
+        msg.body = decrypt_string(encrypted_body);
+
+        // 2. Metadata
+        msg.is_mine = (sqlite3_column_int(stmt, 1) != 0);
+        msg.timestamp = static_cast<uint64_t>(sqlite3_column_int64(stmt, 2));
+
+        history.push_back(msg);
+    }
+    sqlite3_finalize(stmt);
+    return history;
+}
+
 } // namespace nest

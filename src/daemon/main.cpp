@@ -9,17 +9,23 @@
 #include <termios.h>
 #include <unistd.h>
 
+// Third-party
+#include <nlohmann/json.hpp>
+
+// Internal Modules
 #include "../common/crypto.hpp"
 #include "../common/db.hpp"
+#include "../common/notifier.hpp"
 #include "router.hpp"
 #include "transfer_manager.hpp"
-#include "common/notifier.hpp"
+#include "ipc_server.hpp"
 
 namespace fs = std::filesystem;
+using json = nlohmann::json;
 
 // --- Helper Functions ---
 
-// Secure Password Input (Unix/macOS)
+// Secure Password Input (Unix/macOS) - Disables terminal echo
 std::string get_password(const std::string& prompt) {
     std::print("{}", prompt);
     std::cout.flush();
@@ -33,7 +39,7 @@ std::string get_password(const std::string& prompt) {
     std::string pass;
     std::getline(std::cin, pass);
 
-    tcsetattr(STDIN_FILENO, TCSANOW, &oldt); // Restore
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt); // Restore settings
     std::println(""); // Newline
     return pass;
 }
@@ -62,7 +68,7 @@ int main(int argc, char* argv[]) {
     std::string db_path = "nest.db";
     nest::Database db;
 
-    // Check if this is a fresh installation
+    // Check if this is a fresh installation for rollback logic
     bool is_new_registration = !fs::exists(db_path);
 
     // 1. Database Login / Setup
@@ -121,12 +127,13 @@ int main(int argc, char* argv[]) {
         std::println("Local identity created.");
     }
 
-    // 3. Initialize Network Components
+    // 3. Initialize Core Components
     nest::Router router(my_keys, my_enc_keys, db);
     nest::TransferManager transfers(router);
     nest::Notifier notifier("Nest");
+    nest::IPCServer ipc(router, transfers);
 
-    // 4. Define Message Handler
+    // 4. Define Message Handler (Callback from Router)
     auto on_message = [&](const std::string& sender_hex, const venom::Payload& p) {
         // A. Resolve Sender Name
         std::string display_name = db.get_contact_name(sender_hex);
@@ -142,56 +149,90 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // B. Handle Payload Types
-        std::string notif_title = "New Message from @" + display_name;
+        // B. Prepare IPC Event Payload (for GUI)
+        json j_payload;
+        j_payload["sender"] = display_name;
+        j_payload["sender_key"] = sender_hex;
+        j_payload["timestamp"] = p.timestamp();
+
         std::string notif_body;
 
+        // C. Handle Payload Types
         if (p.type() == venom::Payload::TEXT) {
+            j_payload["type"] = "text";
+            j_payload["body"] = p.body();
+
             std::println("\n>>> @{}: {}", display_name, p.body());
             notif_body = p.body();
         }
         else if (p.type() == venom::Payload::MEDIA) {
-            std::println("\n>>> @{} sent a FILE: {}", display_name, p.attachment().filename());
+            std::string filename = p.attachment().filename();
+
+            j_payload["type"] = "media";
+            j_payload["filename"] = filename;
+            j_payload["filesize"] = p.attachment().size_bytes();
+            j_payload["mimetype"] = p.attachment().mime_type();
+
+            std::println("\n>>> @{} sent a FILE: {}", display_name, filename);
             std::println("    Size: {} bytes | MIME: {}", p.attachment().size_bytes(), p.attachment().mime_type());
             std::println("    [Auto-downloading to ./downloads/]");
-            notif_body = "Sent a file: " + p.attachment().filename();
+            notif_body = "Sent a file: " + filename;
 
-            // Ensure directory exists
+            // Auto-download logic
             fs::create_directories("downloads");
-
-            // Queue for background download
             transfers.queue_download(p.attachment(), "downloads", display_name);
         }
         else if (p.type() == venom::Payload::VOICE) {
-            std::println("\n>>> @{} sent a VOICE message ({} bytes)", display_name, p.embedded_data().size());
-            // TODO: Play audio
+            j_payload["type"] = "voice";
+            j_payload["size"] = p.embedded_data().size();
+
+            std::println("\n>>> @{} sent a VOICE message", display_name);
+            notif_body = "Sent a voice message.";
         }
-        // TODO: do not fire if client is opened.
-        // we might pass the chatID as well to check if the needed chat is opened.
-        // do not fire if the *target* chat is opened. fire otherwise.
-        notifier.notify(notif_title, notif_body);
-        // C. Save to History
+
+        // D. Broadcast to GUI via IPC
+        ipc.broadcast_event("new_message", j_payload);
+
+        // E. Desktop Notification
+        notifier.notify("Message from @" + display_name, notif_body);
+
+        // F. Save to History
         db.save_message(sender_hex, p.body(), false);
 
-        // Restore prompt
+        // Restore CLI prompt
         std::print("> ");
         std::cout.flush();
     };
 
-    // 5. Start Services
+    // 5. Start All Services
     std::println("Connecting to Hive at {}...", server_ip);
+
+    // Start polling the server
     router.start(server_ip, server_port, on_message);
+
+    // Start background file worker
     transfers.start();
 
+    // Start IPC server for GUI (tcp://127.0.0.1:9002)
+    ipc.start();
+
     // 6. Server Registration / Sync
-    // We register on every startup to ensure the server has our latest IP/Status
+    // We register on every startup to ensure the server has our latest presence
     if (router.register_on_server(my_name)) {
         std::println("Connected and Registered as @{}", my_name);
+
+        // Notify GUI we are ready
+        json info;
+        info["username"] = my_name;
+        info["pubkey"] = to_hex(my_keys.public_key);
+        ipc.broadcast_event("ready", info);
+
     } else {
         std::println(stderr, "Registration Failed! Username taken or Server unreachable.");
 
         // Critical Rollback: If this was a new user, delete the local DB so they can try again.
         if (is_new_registration) {
+            ipc.stop();
             transfers.stop();
             router.stop();
             db.close();
@@ -202,15 +243,13 @@ int main(int argc, char* argv[]) {
     }
 
     std::println("System Ready.");
-    std::println("Commands:");
-    std::println("  /send @user <message>");
-    std::println("  /upload <file_path> @user [caption]");
-    std::println("  /quit");
+    std::println("CLI Commands: /send @user <msg>, /upload <file> @user, /quit");
+    std::println("(GUI Client can now connect on port 9002)");
 
     // 7. Command Loop
     std::string line;
 
-    // Clear buffer if we used cin during registration
+    // Clear buffer if we used cin during registration wizard
     if (is_new_registration) std::getline(std::cin, line);
 
     while (true) {
@@ -249,7 +288,7 @@ int main(int argc, char* argv[]) {
                     // Save to local history (self)
                     db.save_message(to_hex(remote->id_key), msg, true);
                 } else {
-                    std::println("Failed to send message.");
+                    std::println("Failed to send message (Server error or User not found).");
                 }
             } else {
                 std::println("Error: User @{} not found.", target_str);
@@ -294,6 +333,7 @@ int main(int argc, char* argv[]) {
 
     // 8. Cleanup
     std::println("Shutting down...");
+    ipc.stop();
     transfers.stop();
     router.stop();
     db.close();

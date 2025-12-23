@@ -47,6 +47,9 @@ namespace nest {
         bool download_file(const venom::Attachment& att, const std::string& output_path);
         bool send_payload(const RemoteUser& target, const venom::Payload& payload);
 
+        const crypto::KeyPair& get_identity() const { return identity_; }
+        const crypto::KeyPair& get_enc_identity() const { return enc_identity_; }
+
     private:
         void polling_loop();
         venom::Packet create_packet(venom::Packet::Type type);

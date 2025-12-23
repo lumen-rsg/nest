@@ -49,7 +49,11 @@ add_executable(nestd
         common/crypto.cpp
         common/db.cpp
         common/file_crypto.cpp
-        ${NOTIFIER_SRC}  # <--- Add the platform specific file
+        ${NOTIFIER_SRC}
+        daemon/ui_gateway.hpp
+        daemon/ui_gateway.cpp
+        daemon/ipc_server.hpp
+        daemon/ipc_server.cpp  # <--- Add the platform specific file
 )
 
 target_include_directories(nestd PRIVATE
@@ -66,4 +70,35 @@ target_link_libraries(nestd PRIVATE
         Threads::Threads
         ${ZMQ_LIBRARY}
         ${PLATFORM_LIBS} # <--- Link Cocoa (Mac) or Libnotify (Linux)
+)
+
+# --- GUI Client (Nectar) ---
+
+# You might need this at the top of the file or in the root CMake
+find_package(OpenGL REQUIRED)
+
+add_executable(nectar
+        nectar/main.cpp
+)
+
+# ImGui sources (backends)
+target_sources(nectar PRIVATE
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+)
+
+# Includes
+target_include_directories(nectar PRIVATE
+        ${imgui_SOURCE_DIR}
+        ${imgui_SOURCE_DIR}/backends
+        ${glfw_SOURCE_DIR}/include
+        ${CPPZMQ_INCLUDE_DIR}
+)
+
+# Linking
+target_link_libraries(nectar PRIVATE
+        imgui_lib           # <--- CHANGE: Link against our custom library
+        glfw
+        ${OPENGL_LIBRARIES}
+        ${ZMQ_LIBRARY}
 )
