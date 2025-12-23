@@ -8,7 +8,7 @@ add_executable(hive
         hive/storage.hpp
         hive/storage.cpp
         common/file_crypto.cpp
-        common/notifier_mac.mm     # Needs DB to store offline messages
+        common/notifier_mac.cpp     # Needs DB to store offline messages
 )
 
 target_include_directories(hive PRIVATE
@@ -27,7 +27,7 @@ target_link_libraries(hive PRIVATE
 
 # --- Platform Specific Notification Sources ---
 if(APPLE)
-    set(NOTIFIER_SRC common/notifier_mac.mm)
+    set(NOTIFIER_SRC common/notifier_mac.cpp)
     find_library(FOUNDATION_LIB Foundation)
     set(PLATFORM_LIBS ${FOUNDATION_LIB})
 elseif(UNIX AND NOT APPLE)
