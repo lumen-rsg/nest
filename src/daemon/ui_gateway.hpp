@@ -4,7 +4,7 @@
 #include <thread>
 #include <atomic>
 #include <vector>
-#include <nlohmann/json.hpp>
+#include "../common/json.hpp"
 
 // Standard networking includes
 #include <sys/socket.h>
