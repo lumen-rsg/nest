@@ -185,6 +185,7 @@ void Router::polling_loop() {
             zmq::socket_t sock(ctx_, zmq::socket_type::req);
             sock.connect(server_addr_);
 
+            // 1. Send FETCH
             auto p = create_packet(venom::Packet::FETCH);
             sign_packet(p);
 
@@ -193,22 +194,61 @@ void Router::polling_loop() {
 
             zmq::message_t reply;
             sock.set(zmq::sockopt::rcvtimeo, 2000);
-            auto res = sock.recv(reply, zmq::recv_flags::none);
 
-            if (res) {
+            std::vector<uint64_t> successful_ids;
+
+            if (sock.recv(reply, zmq::recv_flags::none)) {
                 venom::Response resp;
-                if (resp.ParseFromArray(reply.data(), static_cast<int>(reply.size())) && resp.status() == 200) {
-                    for (const auto& env : resp.pending_messages()) {
-                        process_inbound_envelope(env);
+                if (resp.ParseFromArray(reply.data(), reply.size()) && resp.status() == 200) {
+
+                    // 2. Process Messages
+                    for (const auto& fm : resp.fetched_messages()) {
+                        uint64_t s_id = fm.server_id();
+
+                        // Try to process
+                        if (process_inbound_envelope(fm.envelope())) {
+                            successful_ids.push_back(s_id);
+                        } else {
+                            std::println(stderr, "[Router] Failed to process msg ID {}. Will NOT Ack.", s_id);
+                            // It will remain on server and be redelivered next poll.
+                            // In future, maybe implement a "poison pill" limit.
+                        }
                     }
                 }
             }
+
+            // 3. Send ACK (if we processed anything)
+            if (!successful_ids.empty()) {
+                // We need a NEW socket or reconnect for the next request in ZMQ REQ/REP pattern
+                // REQ sockets are strictly Send->Recv. We cannot Send->Recv->Send on the same connection object easily
+                // without the server expecting it.
+                // Easiest way: Re-create socket or just loop again immediately?
+                // Let's just create a quick ACK request here.
+
+                sock.close(); // Reset
+                zmq::socket_t ack_sock(ctx_, zmq::socket_type::req);
+                ack_sock.connect(server_addr_);
+
+                auto ack_pkt = create_packet(venom::Packet::ACK);
+                for (uint64_t id : successful_ids) {
+                    ack_pkt.add_ack_ids(id);
+                }
+                sign_packet(ack_pkt);
+
+                std::string ack_data; ack_pkt.SerializeToString(&ack_data);
+                ack_sock.send(zmq::buffer(ack_data), zmq::send_flags::none);
+
+                // Wait for ACK response (just to clean up socket state)
+                zmq::message_t dummy;
+                ack_sock.recv(dummy, zmq::recv_flags::none);
+            }
+
         } catch (...) {}
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 }
 
-void Router::process_inbound_envelope(const venom::Envelope& env) {
+bool Router::process_inbound_envelope(const venom::Envelope& env) {
     auto sender_id = to_vec(env.sender_identity_key());
     auto eph_pub = to_vec(env.ephemeral_pubkey());
     auto cipher = to_vec(env.ciphertext());
@@ -218,23 +258,25 @@ void Router::process_inbound_envelope(const venom::Envelope& env) {
     // Verify Sender
     if (!crypto::verify(cipher, sig, sender_id)) {
         std::println(stderr, "[Router] Invalid inner signature.");
-        return;
+        return false;
     }
 
     // Decrypt (My X25519 Priv + Sender Eph X25519 Pub)
     auto secret_res = crypto::derive_secret(enc_identity_.private_key, eph_pub);
-    if (!secret_res) return;
+    if (!secret_res) return false;
 
     std::vector<uint8_t> combined = nonce;
     combined.insert(combined.end(), cipher.begin(), cipher.end());
 
     auto plain = crypto::decrypt_aes_gcm(combined, *secret_res);
-    if (!plain) return;
+    if (!plain) return false;
 
     venom::Payload p;
     if (p.ParseFromArray(plain->data(), static_cast<int>(plain->size()))) {
         if (on_message_) on_message_(to_hex(sender_id), p);
+        return true; // SUCCESS
     }
+    return false;
 }
 
     std::optional<RemoteUser> Router::lookup_user_by_id(const std::string& id_hex) {

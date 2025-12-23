@@ -3,6 +3,11 @@ package venom;
 
 // --- 1. Sub-Messages (Definitions first) ---
 
+message FetchedMessage {
+    uint64 server_id = 1;  // The ID in the Hive DB
+    Envelope envelope = 2; // The E2EE content
+}
+
 message RegisterPayload {
     string username = 1;
     bytes enc_pubkey = 2;
@@ -70,6 +75,7 @@ message Packet {
         UPLOAD_CHUNK = 11;
         UPLOAD_FINALIZE = 12;
         DOWNLOAD_CHUNK = 13;
+        ACK = 14;
     }
 
     Type type = 1;
@@ -90,16 +96,19 @@ message Packet {
     string session_id = 10;
     FileChunk file_chunk = 11;
     string file_id = 12;
+    repeated uint64 ack_ids = 13; // List of IDs to delete
 }
 
 message Response {
     uint32 status = 1;
     string error_msg = 2;
-
     UserInfo user_info = 3;
-    repeated Envelope pending_messages = 4;
 
-    // File Responses
+    // CHANGED: Was 'repeated Envelope pending_messages'
+    // We keep the old field index 4 deprecated or unused to avoid offset issues if binary compat mattered
+    // but since we are dev, we can just replace or add new.
+    repeated FetchedMessage fetched_messages = 8;
+
     string session_id = 5;
     string file_id = 6;
     FileChunk file_chunk = 7;

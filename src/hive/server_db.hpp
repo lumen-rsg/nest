@@ -123,6 +123,52 @@ public:
         return res;
     }
 
+    // In ServerDB class:
+
+    // Changed: Returns pairs of {id, blob}
+    std::vector<std::pair<int64_t, std::string>> fetch_messages_peek(const std::vector<uint8_t>& target_id) {
+        std::vector<std::pair<int64_t, std::string>> msgs;
+        sqlite3_stmt* stmt;
+
+        // Just SELECT, do not DELETE
+        const char* sql = "SELECT id, envelope_blob FROM inbox WHERE target_pubkey = ?";
+        sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+        sqlite3_bind_blob(stmt, 1, target_id.data(), target_id.size(), SQLITE_STATIC);
+
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            int64_t id = sqlite3_column_int64(stmt, 0);
+            const void* b = sqlite3_column_blob(stmt, 1);
+            int s = sqlite3_column_bytes(stmt, 1);
+            msgs.emplace_back(id, std::string((const char*)b, s));
+        }
+        sqlite3_finalize(stmt);
+        return msgs;
+    }
+
+    // New: Delete specific IDs but ONLY if they belong to target_id (Security check)
+    void delete_messages(const std::vector<uint8_t>& target_id, const std::vector<uint64_t>& ids) {
+        if (ids.empty()) return;
+
+        // Construct "DELETE FROM inbox WHERE target_pubkey=? AND id IN (?,?,?)"
+        // Since binding a vector is hard in SQL, we do a loop inside a transaction.
+
+        sqlite3_exec(db_, "BEGIN TRANSACTION", nullptr, nullptr, nullptr);
+
+        sqlite3_stmt* stmt;
+        const char* sql = "DELETE FROM inbox WHERE id = ? AND target_pubkey = ?";
+        sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+
+        for (uint64_t id : ids) {
+            sqlite3_bind_int64(stmt, 1, id);
+            sqlite3_bind_blob(stmt, 2, target_id.data(), target_id.size(), SQLITE_STATIC);
+            sqlite3_step(stmt);
+            sqlite3_reset(stmt);
+        }
+
+        sqlite3_finalize(stmt);
+        sqlite3_exec(db_, "COMMIT", nullptr, nullptr, nullptr);
+    }
+
 
 
     // --- Inbox ---

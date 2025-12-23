@@ -1,38 +1,47 @@
-//
-// Created by cv2 on 23.12.2025.
-//
-
 #ifdef __APPLE__
 
 #include "notifier.hpp"
-#import <Foundation/Foundation.h>
+#include <string>
+#include <vector>
+#include <iostream>
+#include <cstdlib>
 
 namespace nest {
 
+// Helper to escape characters for AppleScript (Double Quotes and Backslashes)
+static std::string escape_for_applescript(const std::string& input) {
+    std::string output;
+    output.reserve(input.size());
+    for (char c : input) {
+        if (c == '"' || c == '\\') {
+            output.push_back('\\');
+        }
+        output.push_back(c);
+    }
+    return output;
+}
+
 Notifier::Notifier(const std::string& app_name) : app_name_(app_name) {
-    // macOS notifications don't need explicit init for CLI tools
     initialized_ = true;
 }
 
-Notifier::~Notifier() {
-    // Nothing to teardown
-}
+Notifier::~Notifier() {}
 
 bool Notifier::notify(const std::string& title, const std::string& body) {
-    @autoreleasepool {
-        NSUserNotification *notification = [[NSUserNotification alloc] init];
+    // Sanitize inputs to prevent command injection
+    std::string safe_title = escape_for_applescript(title);
+    std::string safe_body = escape_for_applescript(body);
+    std::string safe_app = escape_for_applescript(app_name_);
 
-        // Convert std::string to NSString
-        NSString *nsTitle = [NSString stringWithUTF8String:title.c_str()];
-        NSString *nsBody = [NSString stringWithUTF8String:body.c_str()];
+    // Construct AppleScript command
+    // display notification "message" with title "title" subtitle "subtitle"
+    std::string command = "osascript -e 'display notification \"" + safe_body +
+                          "\" with title \"" + safe_app +
+                          "\" subtitle \"" + safe_title + "\"'";
 
-        [notification setTitle:nsTitle];
-        [notification setInformativeText:nsBody];
-        [notification setSoundName:NSUserNotificationDefaultSoundName];
-
-        [[NSUserNotificationCenter defaultUserNotificationCenter] deliverNotification:notification];
-    }
-    return true;
+    // Execute
+    int ret = std::system(command.c_str());
+    return (ret == 0);
 }
 
 } // namespace nest

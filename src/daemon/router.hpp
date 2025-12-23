@@ -51,7 +51,7 @@ namespace nest {
         void polling_loop();
         venom::Packet create_packet(venom::Packet::Type type);
         void sign_packet(venom::Packet& p);
-        void process_inbound_envelope(const venom::Envelope& env);
+        bool process_inbound_envelope(const venom::Envelope& env);
         bool send_request(venom::Packet& p, venom::Response& out_resp);
 
         crypto::KeyPair identity_;

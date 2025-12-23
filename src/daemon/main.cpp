@@ -166,6 +166,9 @@ int main(int argc, char* argv[]) {
             std::println("\n>>> @{} sent a VOICE message ({} bytes)", display_name, p.embedded_data().size());
             // TODO: Play audio
         }
+        // TODO: do not fire if client is opened.
+        // we might pass the chatID as well to check if the needed chat is opened.
+        // do not fire if the *target* chat is opened. fire otherwise.
         notifier.notify(notif_title, notif_body);
         // C. Save to History
         db.save_message(sender_hex, p.body(), false);

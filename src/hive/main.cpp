@@ -11,7 +11,7 @@
 #include "server_db.hpp"
 #include "storage.hpp"
 #include "../common/crypto.hpp"
-#include "../common/file_crypto.hpp" // Required for ENCRYPTED_CHUNK_SIZE
+#include "../common/file_crypto.hpp"
 
 // --- Helpers ---
 
@@ -33,7 +33,7 @@ std::string to_hex(const std::vector<uint8_t>& data) {
 
 int main() {
     std::println("=========================================");
-    std::println("           HIVE SERVER v1.0              ");
+    std::println("           HIVE SERVER v1.1 (ACK)        ");
     std::println("=========================================");
 
     // 1. Initialize Database
@@ -44,14 +44,13 @@ int main() {
     }
 
     // 2. Initialize File Storage
-    // Stores files in ./hive_data/store/ and ./hive_data/temp/
     nest::StorageEngine storage("hive_data");
     if (!storage.init()) {
         std::println(stderr, "Fatal: Failed to initialize storage directory.");
         return 1;
     }
 
-    // 3. Initialize Network (ZeroMQ)
+    // 3. Initialize Network
     zmq::context_t ctx;
     zmq::socket_t socket(ctx, zmq::socket_type::rep);
 
@@ -66,184 +65,126 @@ int main() {
     // 4. Main Request Loop
     while (true) {
         zmq::message_t request;
-
-        // Block until a request arrives
         auto recv_res = socket.recv(request, zmq::recv_flags::none);
-        if (!recv_res) break; // Context destroyed / Exit
+        if (!recv_res) break;
 
         venom::Packet packet;
         venom::Response response;
-
-        // Default to OK, overwrite on error
         response.set_status(200);
 
-        // A. Parse Packet
         if (!packet.ParseFromArray(request.data(), static_cast<int>(request.size()))) {
             response.set_status(400);
             response.set_error_msg("Malformed Protocol Buffer");
         }
         else {
-            // B. Verify Signature (Authentication)
-            // Reconstruct the data that was signed: [SenderID_Bytes + Timestamp_String]
+            // --- VERIFY SIGNATURE ---
             std::string expected_data = packet.sender_id_pubkey() + std::to_string(packet.timestamp());
             std::vector<uint8_t> raw_payload(expected_data.begin(), expected_data.end());
-
             std::vector<uint8_t> signature = to_vec(packet.signature());
             std::vector<uint8_t> sender_pubkey = to_vec(packet.sender_id_pubkey());
 
-            // Optional: Check timestamp freshness here (e.g., +/- 5 minutes)
-
             if (!nest::crypto::verify(raw_payload, signature, sender_pubkey)) {
-                std::println(stderr, "[Hive] Auth Failed: Invalid Signature from {}", to_hex(sender_pubkey).substr(0, 8));
+                std::println(stderr, "[Hive] Auth Failed: Invalid Signature");
                 response.set_status(401);
-                response.set_error_msg("Authentication Failed: Invalid Signature");
+                response.set_error_msg("Authentication Failed");
             }
             else {
-                // C. Logic Dispatch
+                // --- LOGIC DISPATCH ---
 
-                // --- USER REGISTRY ---
+                // 1. REGISTRATION
                 if (packet.type() == venom::Packet::REGISTER) {
                     std::string username = packet.register_().username();
                     auto enc_key = to_vec(packet.register_().enc_pubkey());
-
-                    std::println("[Registry] Register request: @{}", username);
-
-                    // Attempt to register
-                    if (db.register_user(username, sender_pubkey, enc_key)) {
-                        std::println("[Registry] Success: @{}", username);
-                    } else {
-                        // Likely username collision
-                        response.set_status(409);
-                        response.set_error_msg("Username already taken");
+                    std::println("[Registry] Register: @{}", username);
+                    if (!db.register_user(username, sender_pubkey, enc_key)) {
+                        response.set_status(409); response.set_error_msg("Username taken");
                     }
                 }
-                else if (packet.type() == venom::Packet::LOOKUP_USER) {
-                    std::string query = packet.lookup_username();
-                    auto user = db.lookup_by_username(query);
 
+                // 2. LOOKUPS
+                else if (packet.type() == venom::Packet::LOOKUP_USER) {
+                    auto user = db.lookup_by_username(packet.lookup_username());
                     if (user) {
                         auto* info = response.mutable_user_info();
                         info->set_username(user->username);
                         info->set_id_pubkey(to_str(user->id_pubkey));
                         info->set_enc_pubkey(to_str(user->enc_pubkey));
-                    } else {
-                        response.set_status(404);
-                        response.set_error_msg("User not found");
-                    }
+                    } else response.set_status(404);
                 }
                 else if (packet.type() == venom::Packet::LOOKUP_USER_BY_ID) {
-                    auto search_id = to_vec(packet.lookup_user_id());
-                    auto user = db.lookup_by_id(search_id);
-
+                    auto user = db.lookup_by_id(to_vec(packet.lookup_user_id()));
                     if (user) {
                         auto* info = response.mutable_user_info();
                         info->set_username(user->username);
                         info->set_id_pubkey(to_str(user->id_pubkey));
                         info->set_enc_pubkey(to_str(user->enc_pubkey));
-                    } else {
-                        response.set_status(404);
-                        response.set_error_msg("User ID not found");
-                    }
+                    } else response.set_status(404);
                 }
 
-                // --- MESSAGING ---
+                // 3. MESSAGING
                 else if (packet.type() == venom::Packet::SEND) {
                     auto target_id = to_vec(packet.target_id_pubkey());
-
-                    // Serialize the inner E2EE envelope to store it opaquely
                     std::string env_blob;
                     packet.envelope().SerializeToString(&env_blob);
-
                     db.store_message(target_id, env_blob);
-                    // std::println("[Msg] Stored message for {}", to_hex(target_id).substr(0, 8));
                 }
                 else if (packet.type() == venom::Packet::FETCH) {
-                    // Fetch messages for the signer
-                    auto msgs = db.fetch_messages(sender_pubkey);
+                    // FIX: Use peek and fetched_messages (ACK System)
+                    auto raw_msgs = db.fetch_messages_peek(sender_pubkey);
 
-                    for (const auto& blob : msgs) {
-                        venom::Envelope* env = response.add_pending_messages();
-                        env->ParseFromString(blob);
+                    for (const auto& [id, blob] : raw_msgs) {
+                        venom::FetchedMessage* fm = response.add_fetched_messages();
+                        fm->set_server_id(static_cast<uint64_t>(id));
+                        fm->mutable_envelope()->ParseFromString(blob);
                     }
-                    if (!msgs.empty()) {
-                        std::println("[Msg] Delivered {} messages to {}", msgs.size(), to_hex(sender_pubkey).substr(0, 8));
+                    if (!raw_msgs.empty()) {
+                        std::println("[Msg] Sending {} pending messages to {}", raw_msgs.size(), to_hex(sender_pubkey).substr(0, 8));
+                    }
+                }
+                else if (packet.type() == venom::Packet::ACK) {
+                    // FIX: Handle Deletions
+                    std::vector<uint64_t> ids;
+                    for (uint64_t id : packet.ack_ids()) ids.push_back(id);
+                    if (!ids.empty()) {
+                        db.delete_messages(sender_pubkey, ids);
+                        std::println("[Msg] ACK received for {} messages.", ids.size());
                     }
                 }
 
-                // --- FILE TRANSFER ---
+                // 4. FILES
                 else if (packet.type() == venom::Packet::UPLOAD_INIT) {
-                    // Start a new upload session
-                    auto session_res = storage.begin_upload();
-                    if (session_res) {
-                        response.set_session_id(*session_res);
-                        std::println("[File] Upload Init: Session {}", *session_res);
-                    } else {
-                        response.set_status(500);
-                        response.set_error_msg("Storage Error: Init failed");
-                    }
+                    auto res = storage.begin_upload();
+                    if (res) response.set_session_id(*res);
+                    else { response.set_status(500); response.set_error_msg("Storage Error"); }
                 }
                 else if (packet.type() == venom::Packet::UPLOAD_CHUNK) {
-                    std::string session_id = packet.session_id();
-                    auto data = to_vec(packet.file_chunk().data());
-
-                    auto res = storage.append_chunk(session_id, data);
-                    if (!res) {
+                    if (!storage.append_chunk(packet.session_id(), to_vec(packet.file_chunk().data()))) {
                         response.set_status(500);
-                        response.set_error_msg("Storage Error: Write failed or Quota exceeded");
                     }
                 }
                 else if (packet.type() == venom::Packet::UPLOAD_FINALIZE) {
-                    std::string session_id = packet.session_id();
-                    std::string uploader_hex = to_hex(sender_pubkey);
-
-                    auto res = storage.finalize_upload(session_id, uploader_hex);
-                    if (res) {
-                        std::string final_hash = *res;
-                        response.set_file_id(final_hash);
-                        std::println("[File] Upload Finalized: {}", final_hash);
-                    } else {
-                        response.set_status(500);
-                        response.set_error_msg("Storage Error: Finalize failed (Hash check/Move)");
-                    }
+                    auto res = storage.finalize_upload(packet.session_id(), to_hex(sender_pubkey));
+                    if (res) response.set_file_id(*res);
+                    else response.set_status(500);
                 }
                 else if (packet.type() == venom::Packet::DOWNLOAD_CHUNK) {
-                    std::string file_id = packet.file_id();
                     uint32_t chunk_idx = packet.file_chunk().chunk_index();
-
-                    // Calculate Offset using the Shared Crypto Constants
-                    // Note: Nest uses Encrypted Chunks = 64KB Data + 16B Tag
                     uint64_t chunk_size = nest::crypto::ENCRYPTED_CHUNK_SIZE;
                     uint64_t offset = (uint64_t)chunk_idx * chunk_size;
 
-                    auto data_res = storage.read_chunk(file_id, offset, chunk_size);
-
+                    auto data_res = storage.read_chunk(packet.file_id(), offset, chunk_size);
                     if (data_res) {
                         auto* chunk = response.mutable_file_chunk();
                         chunk->set_chunk_index(chunk_idx);
                         chunk->set_data(to_str(*data_res));
-                    } else {
-                        response.set_status(404);
-                        response.set_error_msg("File or Chunk not found");
-                    }
-                }
-                else {
-                    response.set_status(400);
-                    response.set_error_msg("Unknown Packet Type");
+                    } else response.set_status(404);
                 }
             }
         }
 
-        // D. Send Response
         std::string response_data;
-        if (response.SerializeToString(&response_data)) {
-            socket.send(zmq::buffer(response_data), zmq::send_flags::none);
-        } else {
-            // Should never happen unless OOM
-            std::println(stderr, "[Hive] Failed to serialize response!");
-            // Try to send empty error
-            socket.send(zmq::buffer(std::string{}), zmq::send_flags::none);
-        }
+        response.SerializeToString(&response_data);
+        socket.send(zmq::buffer(response_data), zmq::send_flags::none);
     }
-
     return 0;
 }
