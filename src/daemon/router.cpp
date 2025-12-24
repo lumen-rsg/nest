@@ -170,13 +170,19 @@ std::optional<RemoteUser> Router::lookup_user(const std::string& username) {
 }
 
     // Update send_text to be a wrapper
-    bool Router::send_text(const RemoteUser& target, const std::string& text) {
-    venom::Payload p;
-    p.set_type(venom::Payload::TEXT);
-    p.set_timestamp(time(nullptr));
-    p.set_body(text);
-    return send_payload(target, p);
-}
+    bool Router::send_text(const RemoteUser& target, const std::string& text,
+                           const std::string& uuid, const std::string& reply_to_uuid) {
+        venom::Payload p;
+        p.set_type(venom::Payload::TEXT);
+        p.set_timestamp(static_cast<uint64_t>(std::time(nullptr)));
+        p.set_body(text);
+
+        // Set the new identifiers
+        p.set_uuid(uuid);
+        p.set_related_uuid(reply_to_uuid);
+
+        return send_payload(target, p);
+    }
 
 void Router::polling_loop() {
     std::println("[Router] Polling Hive at {}...", server_addr_);
@@ -244,38 +250,71 @@ void Router::polling_loop() {
             }
 
         } catch (...) {}
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 }
 
 bool Router::process_inbound_envelope(const venom::Envelope& env) {
-    auto sender_id = to_vec(env.sender_identity_key());
+    // 1. Extract Fields
+    auto sender = to_vec(env.sender_identity_key());
     auto eph_pub = to_vec(env.ephemeral_pubkey());
-    auto cipher = to_vec(env.ciphertext());
-    auto sig = to_vec(env.signature());
+    auto ciphertext = to_vec(env.ciphertext());
+    auto signature = to_vec(env.signature());
     auto nonce = to_vec(env.nonce());
 
-    // Verify Sender
-    if (!crypto::verify(cipher, sig, sender_id)) {
+    // 2. Verify Inner Signature (Sender Identity)
+    if (!crypto::verify(ciphertext, signature, sender)) {
         std::println(stderr, "[Router] Invalid inner signature.");
         return false;
     }
 
-    // Decrypt (My X25519 Priv + Sender Eph X25519 Pub)
+    // 3. Decrypt (My X25519 Priv + Sender X25519 Eph Pub)
     auto secret_res = crypto::derive_secret(enc_identity_.private_key, eph_pub);
     if (!secret_res) return false;
 
     std::vector<uint8_t> combined = nonce;
-    combined.insert(combined.end(), cipher.begin(), cipher.end());
+    combined.insert(combined.end(), ciphertext.begin(), ciphertext.end());
 
-    auto plain = crypto::decrypt_aes_gcm(combined, *secret_res);
-    if (!plain) return false;
+    auto plain_res = crypto::decrypt_aes_gcm(combined, *secret_res);
+    if (!plain_res) return false;
 
+    // 4. Parse Payload
     venom::Payload p;
-    if (p.ParseFromArray(plain->data(), static_cast<int>(plain->size()))) {
-        if (on_message_) on_message_(to_hex(sender_id), p);
-        return true; // SUCCESS
+    if (p.ParseFromArray(plain_res->data(), static_cast<int>(plain_res->size()))) {
+
+        std::string sender_hex = to_hex(sender);
+
+        // --- HANDLE LOGIC (Edit/Delete/Save) ---
+        if (p.type() == venom::Payload::EDIT) {
+            // Apply edit to local DB
+            // p.related_uuid() is the ID of the message to edit
+            // p.body() is the new text
+            db_.edit_message(p.related_uuid(), p.body());
+        }
+        else if (p.type() == venom::Payload::DELETE) {
+            // Apply delete to local DB
+            // p.related_uuid() is the ID of the message to delete
+            db_.delete_message(p.related_uuid());
+        }
+        else {
+            // Normal Message (Text/Media/Voice)
+            // Save with UUIDs
+            db_.save_message(
+                sender_hex,
+                p.body(),
+                false, // is_mine = false
+                p.uuid(),
+                p.related_uuid()
+            );
+        }
+
+        // Forward to UI
+        if (on_message_) {
+            on_message_(sender_hex, p);
+        }
+        return true;
     }
+
     return false;
 }
 

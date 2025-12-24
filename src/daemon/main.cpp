@@ -185,42 +185,88 @@ int main(int argc, char* argv[]) {
     ipc.set_identity(my_name, to_hex(my_keys.public_key));
 
     // Message Handler
+ // 4. Define Message Handler (Callback from Router)
     auto on_message = [&](const std::string& sender_hex, const venom::Payload& p) {
+        // A. Resolve Sender Name
         std::string display_name = db.get_contact_name(sender_hex);
+
         if (display_name.empty()) {
             auto remote = router.lookup_user_by_id(sender_hex);
             if (remote) {
                 display_name = remote->username;
                 db.set_contact_name(sender_hex, display_name);
-            } else display_name = "Unknown";
+            } else {
+                display_name = "Unknown[" + sender_hex.substr(0, 6) + "]";
+            }
         }
 
-        json j;
+        // B. Prepare IPC Event Payload
+        json j; // <--- Variable is named 'j'
         j["sender"] = display_name;
         j["sender_key"] = sender_hex;
         j["timestamp"] = p.timestamp();
+        j["uuid"] = p.uuid();
+        j["reply_to"] = p.related_uuid();
 
         std::string notif_body;
+        bool should_notify = false;
 
+        // C. Handle Payload Types
         if (p.type() == venom::Payload::TEXT) {
             j["type"] = "text";
             j["body"] = p.body();
+
+            std::println("\n>>> @{}: {}", display_name, p.body());
             notif_body = p.body();
-            std::println(">>> @{}: {}", display_name, p.body());
+            should_notify = true;
         }
         else if (p.type() == venom::Payload::MEDIA) {
+            std::string filename = p.attachment().filename();
+
             j["type"] = "media";
-            j["filename"] = p.attachment().filename();
-            // TODO: Pass full local path if downloaded
-            notif_body = "Sent a file.";
+            j["filename"] = filename;
+            j["filesize"] = p.attachment().size_bytes();
+            j["mimetype"] = p.attachment().mime_type(); // <--- FIXED (was j_payload)
+
+            std::println("\n>>> @{} sent a FILE: {}", display_name, filename);
+            std::println("    Size: {} bytes", p.attachment().size_bytes());
+
+            notif_body = "Sent a file: " + filename;
+            should_notify = true;
 
             fs::create_directories("downloads");
             transfers.queue_download(p.attachment(), "downloads", display_name);
         }
+        else if (p.type() == venom::Payload::VOICE) {
+            j["type"] = "voice";
+            j["size"] = p.embedded_data().size();
 
+            std::println("\n>>> @{} sent a VOICE message", display_name);
+            notif_body = "Sent a voice message.";
+            should_notify = true;
+        }
+        else if (p.type() == venom::Payload::EDIT) {
+            j["type"] = "edit";
+            j["body"] = p.body();
+            j["related_uuid"] = p.related_uuid();
+            std::println("\n>>> @{} EDITED message {}", display_name, p.related_uuid());
+        }
+        else if (p.type() == venom::Payload::DELETE) {
+            j["type"] = "delete";
+            j["related_uuid"] = p.related_uuid();
+            std::println("\n>>> @{} DELETED message {}", display_name, p.related_uuid());
+        }
+
+        // D. Broadcast
         ipc.broadcast_event("new_message", j);
-        notifier.notify("Message from @" + display_name, notif_body);
-        db.save_message(sender_hex, p.body(), false);
+
+        // E. Notify
+        if (should_notify) {
+            notifier.notify("Message from @" + display_name, notif_body);
+        }
+
+        std::print("> ");
+        std::cout.flush();
     };
 
     router.start(final_server_ip, 5555, on_message);

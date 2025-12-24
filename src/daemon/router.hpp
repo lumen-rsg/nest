@@ -38,7 +38,8 @@ namespace nest {
         std::optional<RemoteUser> lookup_user(const std::string& username);
 
         // Send E2EE message to a resolved user
-        bool send_text(const RemoteUser& target, const std::string& text);
+        bool send_text(const RemoteUser& target, const std::string& text,
+                  const std::string& uuid, const std::string& reply_to_uuid);
         std::optional<RemoteUser> lookup_user_by_id(const std::string& id_hex);
 
         // Upload a file securely
@@ -53,6 +54,7 @@ namespace nest {
 
         nlohmann::json get_all_chats();
         void save_contact(const std::string& username, const std::string& pubkey_hex);
+        Database& db() { return db_; }
 
     private:
         void polling_loop();

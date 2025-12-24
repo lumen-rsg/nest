@@ -51,12 +51,20 @@ message Payload {
         TEXT = 0;
         VOICE = 1;
         MEDIA = 2;
+        // --- NEW TYPES ---
+        EDIT = 3;   // "Replace content of message X"
+        DELETE = 4; // "Remove message X"
     }
+
     Type type = 1;
     uint64 timestamp = 2;
     string body = 3;
     bytes embedded_data = 4;
     Attachment attachment = 5;
+
+    // --- NEW IDENTIFIERS ---
+    string uuid = 6;          // The unique ID of THIS message
+    string related_uuid = 7;  // The ID of the message we are Replying to, Editing, or Deleting
 }
 
 // --- 3. Transport Packets ---

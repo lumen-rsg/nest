@@ -50,8 +50,6 @@ add_executable(nestd
         common/db.cpp
         common/file_crypto.cpp
         ${NOTIFIER_SRC}
-        daemon/ui_gateway.hpp
-        daemon/ui_gateway.cpp
         daemon/ipc_server.hpp
         daemon/ipc_server.cpp  # <--- Add the platform specific file
 )

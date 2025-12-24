@@ -79,7 +79,7 @@ void TransferManager::worker_loop() {
         if (!upload_queue_.empty()) {
             auto job = upload_queue_.front();
             upload_queue_.pop();
-            lock.unlock(); // Release lock during I/O
+            lock.unlock();
 
             std::println("\n[Transfer] Uploading '{}' to @{}...", job.filepath, job.target.username);
 
@@ -89,22 +89,19 @@ void TransferManager::worker_loop() {
             if (success) {
                 std::println("[Transfer] Upload complete. Sending key to target...");
 
-                // Construct the E2EE Message
                 venom::Payload pay;
                 pay.set_type(venom::Payload::MEDIA);
                 pay.set_timestamp(time(nullptr));
-                pay.set_body(job.caption); // "Sent a file: movie.mp4"
-                *pay.mutable_attachment() = attachment_meta; // Embed keys/hash
 
-                // Send using generic router function (we need to expose send_payload or just use send_text logic)
-                // Since send_text takes string, we need a lower level "send_payload" in Router.
-                // Or we can cheat and Serialize payload to string, but send_text creates a new Payload object.
-                // FIX: Let's add `send_payload` to Router public API.
+                // USE THE JOB'S CAPTION
+                pay.set_body(job.caption.empty() ? attachment_meta.filename() : job.caption);
+
+                *pay.mutable_attachment() = attachment_meta;
 
                 if (router_.send_payload(job.target, pay)) {
-                     std::println("[Transfer] Message sent successfully.");
+                    std::println("[Transfer] Message sent successfully.");
                 } else {
-                     std::println(stderr, "[Transfer] Failed to send message metadata!");
+                    std::println(stderr, "[Transfer] Failed to send message metadata!");
                 }
             } else {
                 std::println(stderr, "[Transfer] Upload FAILED.");

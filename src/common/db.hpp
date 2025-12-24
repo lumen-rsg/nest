@@ -52,8 +52,11 @@ namespace nest {
         // Get all contacts
         struct Contact { std::string pubkey; std::string name; std::string ip; };
         std::vector<Contact> get_contacts();
+        bool edit_message(const std::string& uuid, const std::string& new_body);
+        bool delete_message(const std::string& uuid);
 
-        bool save_message(const std::string& peer_key, const std::string& body, bool is_mine);
+        bool save_message(const std::string& peer_key, const std::string& body, bool is_mine,
+                          const std::string& uuid, const std::string& reply_uuid);
         std::vector<StoredMessage> get_chat_history(const std::string& peer_key);
 
         // --- Contact Cache (Key -> Name) ---
