@@ -6,7 +6,7 @@
 #include <thread>
 #include <atomic>
 #include <zmq.hpp>
-#include <nlohmann/json.hpp>
+#include "../common/json.hpp"
 #include <functional>
 
 namespace nest {
