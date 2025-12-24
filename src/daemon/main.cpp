@@ -184,11 +184,19 @@ int main(int argc, char* argv[]) {
     ipc.set_services(&router, &transfers);
     ipc.set_identity(my_name, to_hex(my_keys.public_key));
 
+    router.on_new_contact_discovered = [&](const std::string& username, const std::string& pubkey_hex) {
+        json payload;
+        payload["username"] = username;
+        // The UI's existing 'contact_added' event handler will pick this up
+        ipc.broadcast_event("contact_added", payload);
+    };
+
     // Message Handler
  // 4. Define Message Handler (Callback from Router)
     auto on_message = [&](const std::string& sender_hex, const venom::Payload& p) {
         // A. Resolve Sender Name
         std::string display_name = db.get_contact_name(sender_hex);
+        if (display_name.empty()) display_name = "Unknown"; // Fallback
 
         if (display_name.empty()) {
             auto remote = router.lookup_user_by_id(sender_hex);

@@ -4,6 +4,7 @@
 #include <iostream>
 #include <print>
 #include <chrono>
+#include <fstream>
 
 namespace nest {
 
@@ -177,6 +178,37 @@ void IPCServer::handle_command(const json& j) {
                 }
             } else {
                 json err; err["msg"] = "User @" + target + " not found.";
+                broadcast_event("error", err);
+            }
+        }else if (cmd == "get_file") {
+            std::string filepath = p.value("path", "");
+
+            // SECURITY: Prevent directory traversal!
+            // Ensure path doesn't contain ".." and is within the downloads dir.
+            // For V1, we'll do a simple check.
+            if (!filepath.empty() && filepath.rfind("downloads/", 0) == 0 && filepath.find("..") == std::string::npos) {
+
+                std::ifstream file(filepath, std::ios::binary | std::ios::ate);
+                if (file.is_open()) {
+                    std::streamsize size = file.tellg();
+                    file.seekg(0, std::ios::beg);
+
+                    std::vector<char> buffer(size);
+                    if (file.read(buffer.data(), size)) {
+                        // Base64 encode to safely transmit over JSON
+                        // We need an OpenSSL helper for this.
+                        std::string b64_data = nest::crypto::base64_encode(
+                            reinterpret_cast<const unsigned char*>(buffer.data()), buffer.size()
+                        );
+
+                        json file_event;
+                        file_event["path"] = filepath;
+                        file_event["data_b64"] = b64_data;
+                        broadcast_event("file_data", file_event);
+                    }
+                }
+            } else {
+                json err; err["msg"] = "Invalid or forbidden file path.";
                 broadcast_event("error", err);
             }
         }

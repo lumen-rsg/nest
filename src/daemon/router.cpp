@@ -284,31 +284,50 @@ bool Router::process_inbound_envelope(const venom::Envelope& env) {
 
         std::string sender_hex = to_hex(sender);
 
-        // --- HANDLE LOGIC (Edit/Delete/Save) ---
+        // --- AUTOMATIC CONTACT DISCOVERY ---
+        // Check if we already know this user by a proper name
+        std::string known_name = db_.get_contact_name(sender_hex);
+        if (known_name.empty() || known_name.starts_with("Unknown")) {
+            // This is a new contact. Let's find out who they are.
+            std::println("[Router] New contact detected ({}). Performing reverse lookup...", sender_hex.substr(0, 6));
+
+            auto remote = lookup_user_by_id(sender_hex);
+            if (remote) {
+                std::println("[Router] Lookup Success: It's @{}", remote->username);
+                // Save them to our DB
+                save_contact(remote->username, sender_hex);
+
+                // Fire the callback to notify the UI
+                if (on_new_contact_discovered) {
+                    on_new_contact_discovered(remote->username, sender_hex);
+                }
+            }
+        }
+
+        // --- DATABASE PERSISTENCE ---
         if (p.type() == venom::Payload::EDIT) {
-            // Apply edit to local DB
-            // p.related_uuid() is the ID of the message to edit
-            // p.body() is the new text
             db_.edit_message(p.related_uuid(), p.body());
         }
         else if (p.type() == venom::Payload::DELETE) {
-            // Apply delete to local DB
-            // p.related_uuid() is the ID of the message to delete
             db_.delete_message(p.related_uuid());
         }
         else {
-            // Normal Message (Text/Media/Voice)
-            // Save with UUIDs
+            std::string body_to_save = p.body();
+            // FIX: If it's media, save the filename as the body
+            if (p.type() == venom::Payload::MEDIA) {
+                body_to_save = "[File] " + p.attachment().filename();
+            }
+
             db_.save_message(
                 sender_hex,
-                p.body(),
-                false, // is_mine = false
+                body_to_save,
+                false, // is_mine
                 p.uuid(),
                 p.related_uuid()
             );
         }
 
-        // Forward to UI
+        // --- FORWARD TO IPC ---
         if (on_message_) {
             on_message_(sender_hex, p);
         }

@@ -63,4 +63,6 @@ namespace nest::crypto {
         int iterations = 600'000
     );
 
+    std::string base64_encode(const unsigned char* data, size_t input_length);
+
 } // namespace nest::crypto

@@ -7,6 +7,8 @@
 #include <openssl/rand.h>
 #include <openssl/err.h>
 #include <openssl/core_names.h>
+#include <openssl/buffer.h> // <--- ADD THIS HEADER
+#include <openssl/bio.h>    // Ensure this is included as well for BIO functions
 #include <print>
 #include <memory>
 #include <cstring>
@@ -225,6 +227,34 @@ std::expected<Bytes, Error> decrypt_aes_gcm(const Bytes& payload, const Bytes& k
 
     if (res != 1) return std::unexpected(Error::DerivationFailed);
     return key;
+}
+
+    std::string base64_encode(const unsigned char* data, size_t input_length) {
+    BIO *b64 = BIO_new(BIO_f_base64());
+    BIO *mem = BIO_new(BIO_s_mem());
+    BIO_push(b64, mem);
+
+    // Don't add newlines to the output
+    BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
+
+    BIO_write(b64, data, static_cast<int>(input_length));
+    BIO_flush(b64);
+
+    BUF_MEM *bptr;
+    // This call gives us the pointer
+    BIO_get_mem_ptr(b64, &bptr);
+
+    // Now bptr->data and bptr->length are accessible
+    std::string result(bptr->data, bptr->length);
+
+    BIO_free_all(b64);
+    return result;
+}
+
+    std::vector<unsigned char> base64_decode(const std::string& data) {
+    // We can implement this for completeness if needed, but the daemon only needs encode for now.
+    // It's a similar process using BIO_read.
+    return {};
 }
 
 } // namespace nest::crypto

@@ -56,6 +56,8 @@ namespace nest {
         void save_contact(const std::string& username, const std::string& pubkey_hex);
         Database& db() { return db_; }
 
+        std::function<void(const std::string& username, const std::string& pubkey_hex)> on_new_contact_discovered;
+
     private:
         void polling_loop();
         venom::Packet create_packet(venom::Packet::Type type);
