@@ -1,6 +1,6 @@
 // --- Include C++ Wrappers FIRST ---
 #include <zmq.hpp>
-#include <nlohmann/json.hpp>
+#include "../common/json.hpp"
 
 // --- Standard C++ Libs ---
 #include <iostream>
