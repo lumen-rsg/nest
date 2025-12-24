@@ -449,4 +449,41 @@ bool Router::download_file(const venom::Attachment& att, const std::string& outp
     return true;
 }
 
+    nlohmann::json Router::get_all_chats() {
+    nlohmann::json root = nlohmann::json::array();
+    auto contacts = db_.get_contacts();
+
+    for (const auto& c : contacts) {
+        nlohmann::json contact_node;
+        contact_node["username"] = c.name;
+        contact_node["key"] = c.pubkey;
+
+        auto history = db_.get_chat_history(c.pubkey);
+        nlohmann::json msgs_node = nlohmann::json::array();
+
+        for (const auto& m : history) {
+            nlohmann::json msg_json;
+            // FIX: Use the contact name if the message sender field is empty
+            std::string s_name = m.is_mine ? "Me" : c.name;
+
+            msg_json["sender"] = s_name;
+            msg_json["content"] = m.body;
+            msg_json["is_mine"] = m.is_mine;
+            msg_json["timestamp"] = m.timestamp;
+
+            if (m.body.starts_with("[File] ")) msg_json["type"] = "media";
+            else msg_json["type"] = "text";
+
+            msgs_node.push_back(msg_json);
+        }
+        contact_node["history"] = msgs_node;
+        root.push_back(contact_node);
+    }
+    return root;
+}
+
+    void Router::save_contact(const std::string& username, const std::string& pubkey_hex) {
+    db_.set_contact_name(pubkey_hex, username);
+}
+
 } // namespace nest

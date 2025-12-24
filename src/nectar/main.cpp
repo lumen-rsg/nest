@@ -88,26 +88,42 @@ private:
 };
 
 // --- Global State ---
-struct AppState {
-    // Settings
-    bool settings_open = false;
-    int current_theme = 1;
-    char my_username[128] = "Unknown";
+enum class AuthState {
+    Connecting, // Waiting for daemon IPC
+    Setup,      // Daemon needs fresh setup
+    Login,      // Daemon needs password
+    Ready       // Authenticated and running
+};
 
-    // Session Management
+struct AppState {
+    // GUI State
+    bool settings_open = false;
     bool add_contact_open = false;
+    int current_theme = 1;
+
+    // Auth State
+    AuthState auth_state = AuthState::Connecting;
+    char login_pass[128] = "";
+    char setup_user[64] = "";
+    char setup_pass[128] = "";
+    char setup_ip[64] = "127.0.0.1";
+    std::string auth_error = "";
+
+    // Session Data
+    char my_username[128] = "Unknown";
+    char my_pubkey[128] = "";
     char new_contact_buf[64] = "";
 
     // Data
-    std::vector<std::string> contact_list; // List of usernames
-    std::map<std::string, nest::Contact> contacts_map; // Data storage
+    std::vector<std::string> contact_list;
+    std::map<std::string, nest::Contact> contacts_map;
     std::string active_contact_name;
 
     NectarClient client;
 
     AppState() {
-        // Init with a placeholder
-        // In real app, we wait for 'ready' event from daemon
+        // Send initial status check
+        client.send_command("get_status", {});
     }
 
     void switch_contact(const std::string& name) {
@@ -126,15 +142,12 @@ struct AppState {
     }
 
     void receive_message(const std::string& sender, const std::string& body, bool is_file) {
-        // Ensure contact exists
         add_contact(sender);
-
         nest::Message msg;
         msg.sender = sender;
         msg.content = body;
         msg.is_mine = false;
         msg.is_file = is_file;
-
         contacts_map[sender].history.push_back(msg);
 
         if (active_contact_name != sender) {
@@ -148,12 +161,38 @@ struct AppState {
         msg.content = body;
         msg.is_mine = true;
         msg.is_file = is_file;
-
-        // Ensure contact exists just in case
-        if (contacts_map.find(target) == contacts_map.end()) {
-            add_contact(target);
-        }
+        if (contacts_map.find(target) == contacts_map.end()) add_contact(target);
         contacts_map[target].history.push_back(msg);
+    }
+
+    void load_from_sync(const nest::json& contacts_array) {
+        // Clear existing to avoid dupes if called multiple times
+        contact_list.clear();
+        contacts_map.clear();
+
+        for (const auto& c : contacts_array) {
+            std::string name = c["username"];
+            nest::Contact contact_obj;
+            contact_obj.username = name;
+
+            // Load History
+            for (const auto& m : c["history"]) {
+                nest::Message msg;
+                msg.sender = m["sender"];
+                msg.content = m["content"];
+                msg.is_mine = m["is_mine"];
+                // timestamp...
+
+                std::string type = m.value("type", "text");
+                msg.is_file = (type == "media");
+
+                contact_obj.history.push_back(msg);
+            }
+
+            contacts_map[name] = contact_obj;
+            contact_list.push_back(name);
+        }
+        std::sort(contact_list.begin(), contact_list.end());
     }
 };
 
@@ -188,6 +227,43 @@ void SetTheme(int index) {
     style.Colors[ImGuiCol_ButtonHovered] = ImVec4(col_accent.x, col_accent.y, col_accent.z, 0.8f);
     style.Colors[ImGuiCol_ButtonActive] = col_accent;
     style.Colors[ImGuiCol_FrameBg] = col_input_bg; style.Colors[ImGuiCol_Header] = col_accent;
+}
+
+void LoadFonts(ImGuiIO& io) {
+    // Path to fonts
+    std::string font_path_reg = "fonts/Satoshi-Regular.ttf";
+    std::string font_path_bold = "fonts/Satoshi-Bold.ttf";
+
+    // Fallbacks if Satoshi isn't found
+    if (!std::filesystem::exists(font_path_reg)) font_path_reg = "/System/Library/Fonts/Helvetica.ttc"; // macOS fallback
+
+    // CYRILLIC SUPPORT CRITICAL STEP:
+    // We must retrieve the glyph ranges for Cyrillic.
+    static const ImWchar* glyph_ranges = io.Fonts->GetGlyphRangesCyrillic();
+
+    ImFontConfig config;
+    config.SizePixels = 16.0f;
+    config.OversampleH = 3;
+    config.OversampleV = 3;
+
+    if (std::filesystem::exists(font_path_reg)) {
+        font_regular = io.Fonts->AddFontFromFileTTF(font_path_reg.c_str(), 16.0f, &config, glyph_ranges);
+    } else {
+        font_regular = io.Fonts->AddFontDefault(&config);
+    }
+
+    ImFontConfig config_lg;
+    config_lg.SizePixels = 24.0f;
+
+    if (std::filesystem::exists(font_path_bold)) {
+        font_input = io.Fonts->AddFontFromFileTTF(font_path_bold.c_str(), 24.0f, &config_lg, glyph_ranges);
+    } else if (std::filesystem::exists(font_path_reg)) {
+        font_input = io.Fonts->AddFontFromFileTTF(font_path_reg.c_str(), 24.0f, &config_lg, glyph_ranges);
+    } else {
+        font_input = io.Fonts->AddFontDefault(&config_lg);
+    }
+
+    io.Fonts->Build();
 }
 
 // --- Renderers ---
@@ -240,7 +316,7 @@ void RenderSettingsPopup(float width) {
     if (!app.settings_open) return;
     ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(400, 320));
+    ImGui::SetNextWindowSize(ImVec2(400, 350));
 
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(col_sidebar.x+0.05f, col_sidebar.y+0.05f, col_sidebar.z+0.05f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_Border, col_accent);
@@ -253,23 +329,33 @@ void RenderSettingsPopup(float width) {
         ImGui::Separator();
         ImGui::Dummy(ImVec2(0, 10));
 
-        ImGui::PushItemWidth(-1);
-        ImGui::TextDisabled("Theme");
+        ImGui::TextDisabled("Appearance");
         const char* themes[] = { "Kawaii", "Dark", "Cyber", "Solar" };
         if (ImGui::Combo("##Theme", &app.current_theme, themes, 4)) SetTheme(app.current_theme);
 
-        ImGui::Dummy(ImVec2(0, 10));
-        ImGui::TextDisabled("Connected as:");
+        ImGui::Dummy(ImVec2(0, 15));
+        ImGui::TextDisabled("Account Info");
+
+        ImGui::Text("Username:");
+        ImGui::SameLine();
         ImGui::TextColored(col_accent, "@%s", app.my_username);
 
-        ImGui::Dummy(ImVec2(0, 10));
-        ImGui::TextDisabled("Daemon Status");
-        ImGui::Text("Connected (Port 9002)");
+        ImGui::Text("Public Key:");
+        // Truncate key for display
+        std::string key_display = std::string(app.my_pubkey).substr(0, 16) + "...";
+        ImGui::TextDisabled("%s", key_display.c_str());
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", app.my_pubkey);
 
-        ImGui::PopItemWidth();
+        ImGui::Dummy(ImVec2(0, 15));
+        ImGui::TextDisabled("System");
+        if (ImGui::Button("Quit Application", ImVec2(150, 30))) {
+            // Send quit to daemon too? Or just exit client?
+            // app.client.send_command("quit", {});
+            exit(0);
+        }
 
         ImGui::Dummy(ImVec2(0, 20));
-        if (ImGui::Button("Close", ImVec2(360, 35))) app.settings_open = false;
+        if (ImGui::Button("Close Menu", ImVec2(360, 35))) app.settings_open = false;
     }
     ImGui::End();
     ImGui::PopStyleVar(3);
@@ -374,15 +460,16 @@ int main(int, char**) {
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
-    ImFontConfig config; config.SizePixels = 15.0f; font_regular = io.Fonts->AddFontDefault(&config);
-    ImFontConfig config_lg; config_lg.SizePixels = 24.0f; font_input = io.Fonts->AddFontDefault(&config_lg);
-
+    LoadFonts(io); // (Keep your LoadFonts helper from previous step)
     ApplyStyle();
-    SetTheme(1); // Set default theme (Dark)
+    SetTheme(1);
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
 
     char input_buffer[4096] = "";
+
+    // Timer for polling daemon status if connecting
+    double last_poll_time = 0.0;
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
@@ -393,166 +480,274 @@ int main(int, char**) {
             std::string type = ev.value("event", "");
             auto payload = ev["payload"];
 
-            if (type == "new_message") {
-                // { "sender": "bob", "body": "hi", "type": "text" }
+            if (type == "status") {
+                std::string status = payload.value("status", "");
+                if (status == "locked") {
+                    app.auth_state = AuthState::Login;
+                }
+                else if (status == "setup_needed") {
+                    app.auth_state = AuthState::Setup;
+                }
+                else if (status == "ready") {
+                    // Daemon is already running and unlocked.
+
+                    // 1. Grab username immediately if available in this packet
+                    if (payload.contains("username")) {
+                        std::string u = payload["username"];
+                        strncpy(app.my_username, u.c_str(), sizeof(app.my_username) - 1);
+                    }
+
+                    // 2. Trigger the full Identity + Sync flow
+                    // "get_self" will result in a "ready" event from the daemon
+                    app.client.send_command("get_self", {});
+
+                    // 3. Set state to show UI
+                    app.auth_state = AuthState::Ready;
+                }
+            }
+            else if (type == "auth_failed") {
+                app.auth_error = payload.value("msg", "Authentication failed");
+                app.login_pass[0] = '\0';
+            }
+            else if (type == "ready") {
+                // Received Identity
+                app.auth_state = AuthState::Ready;
+                app.auth_error = "";
+
+                std::string u = payload.value("username", "Unknown");
+                std::string k = payload.value("pubkey", "");
+                strncpy(app.my_username, u.c_str(), sizeof(app.my_username) - 1);
+                strncpy(app.my_pubkey, k.c_str(), sizeof(app.my_pubkey) - 1);
+
+                // IMPORTANT: Now that we know who we are, fetch history
+                app.client.send_command("sync_request", {});
+            }
+            else if (type == "sync_response") {
+                // Received Contacts & History
+                if (payload.contains("contacts")) {
+                    app.load_from_sync(payload["contacts"]);
+                }
+            }
+            else if (type == "new_message") {
                 std::string sender = payload.value("sender", "Unknown");
                 std::string body = payload.value("body", "");
                 if (payload.value("type", "") == "media") {
-                    body = payload.value("filename", "File");
+                    body = "[File] " + payload.value("filename", "File");
                     app.receive_message(sender, body, true);
                 } else {
                     app.receive_message(sender, body, false);
                 }
             }
-            else if (type == "ready") {
-                std::string u = payload.value("username", "Unknown");
-                strncpy(app.my_username, u.c_str(), sizeof(app.my_username) - 1);
+        }
+
+        // Keep trying to connect if we are stuck on Connecting
+        if (app.auth_state == AuthState::Connecting) {
+            double now = glfwGetTime();
+            if (now - last_poll_time > 1.0) {
+                app.client.send_command("get_status", {});
+                last_poll_time = now;
             }
         }
-        // -------------------------
 
+        // --- RENDER START ---
         ImGui_ImplOpenGL3_NewFrame(); ImGui_ImplGlfw_NewFrame(); ImGui::NewFrame();
 
+        // Fullscreen window for layout
         ImGui::SetNextWindowPos(ImVec2(0,0)); ImGui::SetNextWindowSize(io.DisplaySize);
-        ImGui::Begin("Root", nullptr, ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
+        ImGui::Begin("Root", nullptr, ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoMove);
 
-        float sidebar_w = 250.0f;
-        float input_h = 120.0f;
-        float content_h = ImGui::GetContentRegionAvail().y;
-        float content_w = ImGui::GetContentRegionAvail().x;
-
-        // --- Sidebar ---
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, col_sidebar);
-        ImGui::BeginChild("Sidebar", ImVec2(sidebar_w, content_h));
-        {
-            ImGui::SetCursorPos(ImVec2(15, 20));
+        // --- AUTH SCREEN LOGIC ---
+        if (app.auth_state != AuthState::Ready) {
+            ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+            ImGui::SetCursorPos(ImVec2(center.x - 150, center.y - 150));
             ImGui::BeginGroup();
-            ImGui::PushFont(font_input); ImGui::TextColored(col_accent, "NECTAR"); ImGui::PopFont();
-            ImGui::Dummy(ImVec2(0, 20));
-            if (ImGui::Button(" + Add Contact ", ImVec2(sidebar_w - 30, 40))) { app.add_contact_open = true; }
-            ImGui::Dummy(ImVec2(0, 20));
-            ImGui::TextDisabled("CONTACTS");
-            ImGui::Dummy(ImVec2(0, 10));
-            ImGui::EndGroup();
 
-            ImGui::SetCursorPosX(10);
-            ImGui::PushItemWidth(sidebar_w - 20);
-
-            // Render Contact List
-            for (const auto& contact : app.contact_list) {
-                bool is_active = (contact == app.active_contact_name);
-                RenderSidebarItem(contact, is_active);
-            }
-            ImGui::PopItemWidth();
-
-            // Footer
-            float foot_h = 70.0f, foot_m = 15.0f;
-            ImGui::SetCursorPos(ImVec2(foot_m, content_h - foot_h - foot_m));
-            ImVec2 p = ImGui::GetCursorScreenPos();
-            float card_w = sidebar_w - (foot_m * 2);
-
-            ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x+3, p.y+3), ImVec2(p.x+card_w+3, p.y+foot_h+3), col_shadow, 10.0f);
-            ImU32 foot_bg = ImGui::ColorConvertFloat4ToU32(ImVec4(col_sidebar.x+0.05f, col_sidebar.y+0.05f, col_sidebar.z+0.05f, 1.0f));
-            ImGui::GetWindowDrawList()->AddRectFilled(p, ImVec2(p.x+card_w, p.y+foot_h), foot_bg, 10.0f);
-
-            ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x+25, p.y+35), 18.0f, IM_COL32(220,170,220,255));
-            ImGui::GetWindowDrawList()->AddText(ImVec2(p.x+20, p.y+28), IM_COL32(20,20,20,255), "Me");
-
-            ImGui::SetCursorPos(ImVec2(foot_m + 55, content_h - foot_h - foot_m + 17));
-            ImGui::BeginGroup();
-            ImGui::Text("%s", app.my_username);
-            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(ImGuiCol_TextDisabled));
-            ImGui::Text("Online");
-            ImGui::PopStyleColor();
-            ImGui::EndGroup();
-
-            ImGui::SameLine();
-            ImGui::SetCursorPos(ImVec2(foot_m + card_w - 40, content_h - foot_h - foot_m + 20));
-            if (ImGui::Button("*", ImVec2(30, 30))) app.settings_open = !app.settings_open;
-        }
-        ImGui::EndChild();
-        ImGui::PopStyleColor();
-
-        // Render Popups (Z-Order Top)
-        RenderSettingsPopup(sidebar_w);
-        RenderAddContactPopup();
-
-        ImGui::SameLine();
-
-        // --- Main ---
-        ImGui::BeginGroup();
-        float chat_h = content_h - input_h;
-        float chat_w = content_w - sidebar_w;
-
-        ImGui::BeginChild("ChatHistory", ImVec2(chat_w, chat_h));
-        {
-            ImGui::Dummy(ImVec2(0, 40));
-            ImGui::Indent(50);
-
-            if (app.active_contact_name.empty()) {
-                ImGui::TextDisabled("Select a contact to start chatting.");
-            } else {
-                const auto& history = app.contacts_map[app.active_contact_name].history;
-                if (history.empty()) {
-                    ImGui::TextDisabled("No messages yet. Say hello!");
-                }
-                for (const auto& msg : history) {
-                    RenderMessageBubble(msg, chat_w - 100);
-                }
-            }
-
-            ImGui::Unindent(50);
-            if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) ImGui::SetScrollHereY(1.0f);
-        }
-        ImGui::EndChild();
-
-        // Input Area
-        ImGui::BeginChild("InputArea", ImVec2(chat_w, input_h));
-        {
-            float bar_h = 60.0f, btn_w = 70.0f, pad_x = 50.0f;
-            ImGui::SetCursorPos(ImVec2(pad_x, (input_h - bar_h) / 2.0f - 10.0f));
-
-            ImGui::PushStyleColor(ImGuiCol_FrameBg, col_input_bg);
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.0f);
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(15, 15));
+            // Logo / Title
             ImGui::PushFont(font_input);
-
-            // File Upload Button (New)
-            if (ImGui::Button("+", ImVec2(40, bar_h))) {
-                 // In a real app, open file dialog here.
-                 // For now, we can hack it to send a test command or open a popup input
-                 // For simplicity V1: Just print to console or command line
-                 std::cout << "Use CLI for uploads in V1" << std::endl;
-            }
-            ImGui::SameLine();
-
-            bool enter = ImGui::InputTextMultiline("##Input", input_buffer, sizeof(input_buffer), ImVec2(chat_w - (pad_x*2) - btn_w - 60, bar_h), ImGuiInputTextFlags_CtrlEnterForNewLine|ImGuiInputTextFlags_EnterReturnsTrue);
-
-            ImGui::PopFont(); ImGui::PopStyleVar(2); ImGui::PopStyleColor();
-            ImGui::SameLine();
-            ImGui::PushFont(font_input);
-            if (ImGui::Button(" > ", ImVec2(btn_w, bar_h)) || enter) {
-                if (strlen(input_buffer) > 0 && !app.active_contact_name.empty()) {
-                    std::string text = input_buffer;
-
-                    // 1. Send via IPC
-                    nest::json p;
-                    p["target"] = app.active_contact_name;
-                    p["text"] = text;
-                    app.client.send_command("send_text", p);
-
-                    // 2. Add to Local UI (Optimistic)
-                    app.sent_message_local(app.active_contact_name, text, false);
-
-                    // Clear input
-                    input_buffer[0] = '\0';
-                    ImGui::SetKeyboardFocusHere(-1);
-                }
-            }
+            ImGui::TextColored(col_accent, "NECTAR SECURE");
             ImGui::PopFont();
+            ImGui::Dummy(ImVec2(0, 20));
+
+            if (app.auth_state == AuthState::Connecting) {
+                ImGui::Text("Connecting to Daemon (nestd)...");
+                ImGui::TextDisabled("Ensure ./nestd is running.");
+            }
+            else if (app.auth_state == AuthState::Login) {
+                ImGui::Text("Enter Database Password:");
+                ImGui::SetNextItemWidth(300);
+                ImGui::InputText("##Pass", app.login_pass, 128, ImGuiInputTextFlags_Password);
+
+                ImGui::Dummy(ImVec2(0, 10));
+                if (!app.auth_error.empty()) ImGui::TextColored(ImVec4(1,0,0,1), "%s", app.auth_error.c_str());
+
+                ImGui::Dummy(ImVec2(0, 10));
+                if (ImGui::Button("Unlock", ImVec2(300, 40))) {
+                    nest::json p; p["password"] = app.login_pass;
+                    app.client.send_command("unlock", p);
+                }
+            }
+            else if (app.auth_state == AuthState::Setup) {
+                ImGui::Text("New User Setup");
+                ImGui::Dummy(ImVec2(0, 10));
+
+                ImGui::TextDisabled("Server IP");
+                ImGui::SetNextItemWidth(300);
+                ImGui::InputText("##IP", app.setup_ip, 64);
+
+                ImGui::TextDisabled("Username");
+                ImGui::SetNextItemWidth(300);
+                ImGui::InputText("##User", app.setup_user, 64);
+
+                ImGui::TextDisabled("Password");
+                ImGui::SetNextItemWidth(300);
+                ImGui::InputText("##Pass", app.setup_pass, 128, ImGuiInputTextFlags_Password);
+
+                ImGui::Dummy(ImVec2(0, 20));
+                if (ImGui::Button("Create Account", ImVec2(300, 40))) {
+                    nest::json p;
+                    p["username"] = app.setup_user;
+                    p["password"] = app.setup_pass;
+                    p["server_ip"] = app.setup_ip;
+                    app.client.send_command("setup", p);
+                }
+            }
+            ImGui::EndGroup();
         }
-        ImGui::EndChild();
-        ImGui::EndGroup();
+        else {
+            // --- MAIN CHAT UI (Logged In) ---
+
+            float sidebar_w = 250.0f;
+            float input_h = 120.0f;
+            float content_h = ImGui::GetContentRegionAvail().y;
+            float content_w = ImGui::GetContentRegionAvail().x;
+
+            // --- Sidebar ---
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, col_sidebar);
+            ImGui::BeginChild("Sidebar", ImVec2(sidebar_w, content_h));
+            {
+                ImGui::SetCursorPos(ImVec2(15, 20));
+                ImGui::BeginGroup();
+                ImGui::PushFont(font_input); ImGui::TextColored(col_accent, "NECTAR"); ImGui::PopFont();
+                ImGui::Dummy(ImVec2(0, 20));
+                if (ImGui::Button(" + Add Contact ", ImVec2(sidebar_w - 30, 40))) { app.add_contact_open = true; }
+                ImGui::Dummy(ImVec2(0, 20));
+                ImGui::TextDisabled("CONTACTS");
+                ImGui::Dummy(ImVec2(0, 10));
+                ImGui::EndGroup();
+
+                ImGui::SetCursorPosX(10);
+                ImGui::PushItemWidth(sidebar_w - 20);
+
+                // Render Contact List
+                for (const auto& contact : app.contact_list) {
+                    bool is_active = (contact == app.active_contact_name);
+                    RenderSidebarItem(contact, is_active);
+                }
+                ImGui::PopItemWidth();
+
+                // Footer
+                float foot_h = 70.0f, foot_m = 15.0f;
+                ImGui::SetCursorPos(ImVec2(foot_m, content_h - foot_h - foot_m));
+                ImVec2 p = ImGui::GetCursorScreenPos();
+                float card_w = sidebar_w - (foot_m * 2);
+
+                ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x+3, p.y+3), ImVec2(p.x+card_w+3, p.y+foot_h+3), col_shadow, 10.0f);
+                ImU32 foot_bg = ImGui::ColorConvertFloat4ToU32(ImVec4(col_sidebar.x+0.05f, col_sidebar.y+0.05f, col_sidebar.z+0.05f, 1.0f));
+                ImGui::GetWindowDrawList()->AddRectFilled(p, ImVec2(p.x+card_w, p.y+foot_h), foot_bg, 10.0f);
+
+                ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x+25, p.y+35), 18.0f, IM_COL32(220,170,220,255));
+                ImGui::GetWindowDrawList()->AddText(ImVec2(p.x+20, p.y+28), IM_COL32(20,20,20,255), "Me");
+
+                ImGui::SetCursorPos(ImVec2(foot_m + 55, content_h - foot_h - foot_m + 17));
+                ImGui::BeginGroup();
+                ImGui::Text("%s", app.my_username);
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetColorU32(ImGuiCol_TextDisabled));
+                ImGui::Text("Online");
+                ImGui::PopStyleColor();
+                ImGui::EndGroup();
+
+                ImGui::SameLine();
+                ImGui::SetCursorPos(ImVec2(foot_m + card_w - 40, content_h - foot_h - foot_m + 20));
+                if (ImGui::Button("*", ImVec2(30, 30))) app.settings_open = !app.settings_open;
+            }
+            ImGui::EndChild();
+            ImGui::PopStyleColor();
+
+            // Render Popups (Z-Order Top)
+            RenderSettingsPopup(sidebar_w);
+            RenderAddContactPopup();
+
+            ImGui::SameLine();
+
+            // --- Main Content Area ---
+            ImGui::BeginGroup();
+            float chat_h = content_h - input_h;
+            float chat_w = content_w - sidebar_w;
+
+            ImGui::BeginChild("ChatHistory", ImVec2(chat_w, chat_h));
+            {
+                ImGui::Dummy(ImVec2(0, 40));
+                ImGui::Indent(50);
+
+                if (app.active_contact_name.empty()) {
+                    ImGui::TextDisabled("Select a contact to start chatting.");
+                } else {
+                    const auto& history = app.contacts_map[app.active_contact_name].history;
+                    if (history.empty()) {
+                        ImGui::TextDisabled("No messages yet. Say hello!");
+                    }
+                    for (const auto& msg : history) {
+                        RenderMessageBubble(msg, chat_w - 100);
+                    }
+                }
+
+                ImGui::Unindent(50);
+                if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) ImGui::SetScrollHereY(1.0f);
+            }
+            ImGui::EndChild();
+
+            // Input Area
+            ImGui::BeginChild("InputArea", ImVec2(chat_w, input_h));
+            {
+                float bar_h = 60.0f, btn_w = 70.0f, pad_x = 50.0f;
+                ImGui::SetCursorPos(ImVec2(pad_x, (input_h - bar_h) / 2.0f - 10.0f));
+
+                ImGui::PushStyleColor(ImGuiCol_FrameBg, col_input_bg);
+                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.0f);
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(15, 15));
+                ImGui::PushFont(font_input);
+
+                if (ImGui::Button("+", ImVec2(40, bar_h))) {
+                    // Placeholder for future File Dialog integration
+                    // app.client.send_command("upload_file", ...);
+                }
+                ImGui::SameLine();
+
+                bool enter = ImGui::InputTextMultiline("##Input", input_buffer, sizeof(input_buffer), ImVec2(chat_w - (pad_x*2) - btn_w - 60, bar_h), ImGuiInputTextFlags_CtrlEnterForNewLine|ImGuiInputTextFlags_EnterReturnsTrue);
+
+                ImGui::PopFont(); ImGui::PopStyleVar(2); ImGui::PopStyleColor();
+                ImGui::SameLine();
+                ImGui::PushFont(font_input);
+                if (ImGui::Button(" > ", ImVec2(btn_w, bar_h)) || enter) {
+                    if (strlen(input_buffer) > 0 && !app.active_contact_name.empty()) {
+                        std::string text = input_buffer;
+
+                        nest::json p;
+                        p["target"] = app.active_contact_name;
+                        p["text"] = text;
+                        app.client.send_command("send_text", p);
+
+                        app.sent_message_local(app.active_contact_name, text, false);
+                        input_buffer[0] = '\0';
+                        ImGui::SetKeyboardFocusHere(-1);
+                    }
+                }
+                ImGui::PopFont();
+            }
+            ImGui::EndChild();
+            ImGui::EndGroup();
+        } // End Auth check
+
         ImGui::End();
 
         ImGui::Render();

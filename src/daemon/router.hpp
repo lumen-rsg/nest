@@ -9,6 +9,7 @@
 #include "../common/crypto.hpp"
 #include "../common/db.hpp"
 #include "venom.pb.h"
+#include "common/json.hpp"
 
 namespace nest {
 
@@ -49,6 +50,9 @@ namespace nest {
 
         const crypto::KeyPair& get_identity() const { return identity_; }
         const crypto::KeyPair& get_enc_identity() const { return enc_identity_; }
+
+        nlohmann::json get_all_chats();
+        void save_contact(const std::string& username, const std::string& pubkey_hex);
 
     private:
         void polling_loop();

@@ -216,7 +216,24 @@ bool Database::save_contact(const std::string& pubkey_hex, const std::string& na
 }
 
     bool Database::save_message(const std::string& peer_key, const std::string& body, bool is_mine) {
-    auto body_enc = encrypt_field(body); // Encrypt content locally!
+    // A. Ensure Peer exists in Contacts table
+    // If we don't do this, get_all_chats() won't find this conversation later!
+    {
+        sqlite3_stmt* check_stmt;
+        sqlite3_prepare_v2(db_, "SELECT 1 FROM contacts WHERE pubkey = ?", -1, &check_stmt, nullptr);
+        sqlite3_bind_text(check_stmt, 1, peer_key.c_str(), -1, SQLITE_STATIC);
+        bool exists = (sqlite3_step(check_stmt) == SQLITE_ROW);
+        sqlite3_finalize(check_stmt);
+
+        if (!exists) {
+            // Insert placeholder contact (Name will be resolved later or is unknown)
+            // If we knew the name here, we'd pass it, but for now "Unknown" or the key hash is fine.
+            set_contact_name(peer_key, "Unknown[" + peer_key.substr(0,4) + "]");
+        }
+    }
+
+    // B. Save the Message
+    auto body_enc = encrypt_field(body);
     sqlite3_stmt* stmt;
     const char* sql = "INSERT INTO messages (peer_key, body_enc, is_mine, timestamp) VALUES (?, ?, ?, ?)";
     sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -224,6 +241,7 @@ bool Database::save_contact(const std::string& pubkey_hex, const std::string& na
     sqlite3_bind_blob(stmt, 2, body_enc.data(), body_enc.size(), SQLITE_STATIC);
     sqlite3_bind_int(stmt, 3, is_mine ? 1 : 0);
     sqlite3_bind_int64(stmt, 4, time(nullptr));
+
     int rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
     return (rc == SQLITE_DONE);
@@ -285,6 +303,54 @@ bool Database::save_contact(const std::string& pubkey_hex, const std::string& na
     }
     sqlite3_finalize(stmt);
     return history;
+}
+
+    // Implementation
+    bool Database::set_config(const std::string& key, const std::string& value) {
+    // We reuse the existing 'config' table but store strings as blobs or text.
+    // The table schema is (key TEXT PRIMARY KEY, value BLOB).
+    std::vector<uint8_t> val(value.begin(), value.end());
+
+    sqlite3_stmt* stmt;
+    const char* sql = "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)";
+    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, key.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_blob(stmt, 2, val.data(), val.size(), SQLITE_STATIC);
+
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE);
+}
+
+    std::string Database::get_config(const std::string& key) {
+    sqlite3_stmt* stmt;
+    const char* sql = "SELECT value FROM config WHERE key=?";
+    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    sqlite3_bind_text(stmt, 1, key.c_str(), -1, SQLITE_STATIC);
+
+    std::string res;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const void* b = sqlite3_column_blob(stmt, 0);
+        int bytes = sqlite3_column_bytes(stmt, 0);
+        if (b && bytes > 0) res.assign((const char*)b, bytes);
+    }
+    sqlite3_finalize(stmt);
+    return res;
+}
+
+    std::vector<Database::Contact> Database::get_contacts() {
+    std::vector<Contact> list;
+    sqlite3_stmt* stmt;
+    // Schema: contacts(pubkey TEXT PRIMARY KEY, name TEXT)
+    sqlite3_prepare_v2(db_, "SELECT pubkey, name FROM contacts", -1, &stmt, nullptr);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        std::string pk = (const char*)sqlite3_column_text(stmt, 0);
+        const char* nm_ptr = (const char*)sqlite3_column_text(stmt, 1);
+        std::string nm = nm_ptr ? nm_ptr : "Unknown";
+        list.push_back({pk, nm, ""});
+    }
+    sqlite3_finalize(stmt);
+    return list;
 }
 
 } // namespace nest

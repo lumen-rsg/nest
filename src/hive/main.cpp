@@ -92,12 +92,43 @@ int main() {
                 // --- LOGIC DISPATCH ---
 
                 // 1. REGISTRATION
-                if (packet.type() == venom::Packet::REGISTER) {
+                 if (packet.type() == venom::Packet::REGISTER) {
                     std::string username = packet.register_().username();
                     auto enc_key = to_vec(packet.register_().enc_pubkey());
-                    std::println("[Registry] Register: @{}", username);
-                    if (!db.register_user(username, sender_pubkey, enc_key)) {
-                        response.set_status(409); response.set_error_msg("Username taken");
+
+                    std::println("[Registry] Register/Login request: @{}", username);
+
+                    // Step A: Check if user exists
+                    auto existing_user = db.lookup_by_username(username);
+
+                    if (existing_user) {
+                        // Step B: Compare Identity Keys (Authentication)
+                        if (existing_user->id_pubkey == sender_pubkey) {
+                            // IT IS THE SAME USER -> Welcome back!
+                            std::println("[Registry] User @{} logged in successfully.", username);
+
+                            // Optional: Here you could update the enc_pubkey in DB
+                            // if the user rotated their keys or reinstalled the OS.
+                            // db.update_enc_key(username, enc_key);
+
+                            response.set_status(200); // Success
+                        }
+                        else {
+                            // IT IS AN IMPOSTER (or different user wanting same name)
+                            std::println(stderr, "[Registry] Rejecting @{}: Key mismatch.", username);
+                            response.set_status(409);
+                            response.set_error_msg("Username taken by another key");
+                        }
+                    }
+                    else {
+                        // Step C: New User -> Create in DB
+                        if (db.register_user(username, sender_pubkey, enc_key)) {
+                            std::println("[Registry] Registered NEW user: @{}", username);
+                            response.set_status(200);
+                        } else {
+                            response.set_status(500);
+                            response.set_error_msg("Database Error");
+                        }
                     }
                 }
 

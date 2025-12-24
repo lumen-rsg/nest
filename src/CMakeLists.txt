@@ -102,3 +102,23 @@ target_link_libraries(nectar PRIVATE
         ${OPENGL_LIBRARIES}
         ${ZMQ_LIBRARY}
 )
+
+# --- TUI Client (Nectar TUI) ---
+find_package(Curses REQUIRED)
+find_package(PkgConfig REQUIRED)
+
+
+add_executable(nectar-tui
+        nectar-tui/main.cpp
+)
+
+target_include_directories(nectar-tui PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CPPZMQ_INCLUDE_DIR}
+        ${CURSES_INCLUDE_DIRS}
+)
+
+target_link_libraries(nectar-tui PRIVATE
+        ${CURSES_LIBRARIES} # Links ncurses
+        ${ZMQ_LIBRARY}
+)

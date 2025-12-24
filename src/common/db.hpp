@@ -60,6 +60,9 @@ namespace nest {
         bool set_contact_name(const std::string& key_hex, const std::string& name);
         std::string get_contact_name(const std::string& key_hex); // Returns name or empty
 
+        bool set_config(const std::string& key, const std::string& value);
+        std::string get_config(const std::string& key); // Returns empty if not found
+
     private:
         // Raw SQLite handle
         sqlite3* db_ = nullptr;
